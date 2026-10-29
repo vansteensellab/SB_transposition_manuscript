@@ -1,0 +1,106 @@
+###############################################################################
+## HOME location read pipeline ################################################
+###############################################################################
+## Christine Moene
+## 2025-06-30
+## version 1.0
+
+# Introduction snakemake:
+# Snakemake is a bioinformatics pipeline tool written in python. It follows the
+# 'make'-logic: you determine rules with which files can be generated, and
+# which input files these require. Snakemake will try to execute the first rule
+# given, and execute other rules based on the input the final rule requires.
+# In this way, you have a pipeline.
+# Some cool features of snakemake:
+# - You give input and output file names, and snakemake will do the rest.
+# - If a rule gives an error, the output file is automatically removed, to
+#   prevent "partial" data files.
+# - Given a number of cores to snakemake, it will automatically parallelize
+#   things when possible.
+# - You can create a fancy workflow overview picture.
+
+# This pipeline:
+# takes the parsed fastq files that are outputted by the tagmap pipeline 
+# (see /DATA/usr/k.rademaker/projects/tagmap_hopping/src/tn5_hopping.snake)
+# and computes how many reads exactly match a given home location sequence
+
+
+###############################################################################
+### General set-up ############################################################
+###############################################################################
+
+import inspect
+import os
+import pandas as pd
+
+# get the path of this script, all other scripts should be in the same directory 
+filename = inspect.getframeinfo(inspect.currentframe()).filename
+scripts_dir = os.path.dirname(os.path.abspath(filename))
+
+
+# get the output directory from config
+output_dir = config['output_dir'].rstrip('/')
+
+# get the input file from config
+input_df = pd.read_csv(config['input_info'], sep='\t', dtype=str)
+input_df.columns = [col.lower() for col in input_df.columns]
+
+#check the input file
+for name in ['sample_name', 'fastq_file', 'lp', 'orientation']:
+    if name not in input_df.columns:
+        raise Exception("%s not found in input file" % name)
+      
+#convert the input file to a Python dictionary (for faster/easier lookup of samples)
+sample_metadata = input_df.set_index("sample_name").to_dict("index")
+
+#get the sample_names
+sample_names = list(sample_metadata.keys())
+
+##################################
+### Helper functions #############
+##################################
+# Here I'll define some helper functions. These are mainly used to get the
+# input files for the rules. Some of them also define the wildcards for the
+# rules.
+
+# define the names of the output file (per sample)
+def get_output_path(output_dir, sample):
+    return f"{output_dir}/{sample}_home_read_counts.tsv"
+  
+# get all information per sample
+def get_metadata(sample, key):
+    return sample_metadata[sample][key]
+  
+# get the correct home location sequence (per sample)
+def get_home_sequence(config, sample):
+   row = sample_metadata[sample]
+   lp = row["lp"]
+   orientation = row["orientation"]
+   return config["launch_pad"][lp][orientation]
+  
+
+
+###############################################################################
+### Rules #####################################################################
+###############################################################################
+
+
+# Rule to generate all the output files
+rule all:
+    input:
+        [get_output_path(output_dir, sample) for sample in sample_names]
+
+
+# run the R script with all necessary input
+# when using 'script', all params are available in the R script as e.g. snakemake@params[["home_seq"]]
+rule process_sample:
+    output:
+        "{output_dir}/{sample}_home_read_counts.tsv"
+    params:
+      home_seq = lambda wildcards: get_home_sequence(config, wildcards.sample),
+      sample_name=lambda wildcards: wildcards.sample,
+      lp=lambda wildcards: get_metadata(wildcards.sample, "lp"),
+      fastq_path=lambda wildcards: get_metadata(wildcards.sample, "fastq_file")
+    script:
+         f"{scripts_dir}/count_home_reads.R"
+ 
