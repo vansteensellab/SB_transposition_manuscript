@@ -7,6 +7,6 @@ In this study we investigated the features that influence Sleeping Beauty transp
 ## Repository guide
 This repository contains information about
 - Figures: R markdown files and some input tables to create the manuscript figures.
-- Chromatin context: Config, input and output files for the chromatin context analysis. This analysis is performed using the TRIP_chromatin_context pipeline, which can be found here: XXX
+- Chromatin context: Config, input and output files for the chromatin context analysis. This analysis is performed using the TRIP_local_context pipeline, which can be found here: [TRIP_local_context](https://github.com/vansteensellab/TRIP_local_context)
 - Tagmentation: All config files for the Tn5 based mapping of transposon integrations in the paper.
 - Transposed fraction: The scripts used to determine the transposed fraction from the intermediate files of the Tagmentation analysis pipeline, and output files for all samples. 
