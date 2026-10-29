@@ -1,0 +1,883 @@
+---
+title: "CM20261021_figure4_contact_integration_location_nested_transposon"
+output: html_document
+date: "2026-10-21"
+---
+
+#Goal
+Assess the relationship between contact and the integration locations in the nested transposon hopping experiment. 
+This script contains uses all the filtering relevant for the manuscript.
+We discovered there is a mild saturation of unique integration sites close to the LP, so we switched from 'fraction of integration' to 'fraction of mapping reads', where we assume that the number of unique mapping reads is a better proxy of integration events. 
+
+# Setup
+##Libraries
+Load the libraries and set the parameters.
+```{r load_libraries}
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(gtools)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggh4x)
+library(stringr)
+library(readr)
+library(knitr)
+library(cowplot)
+library(ggpubr)
+
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(Biostrings)
+library(ggseqlogo)
+library(ShortRead)
+library(GENOVA)
+library(GGally)
+
+library(ggbeeswarm)
+library(scales)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+
+source('/home/c.moene/projects/hopping_technology/01_genomewide_chromatin_background/CM20260330_compute_chromatin_background.R')
+```
+
+
+## Paths & parameters
+```{r paths_parameters}
+
+#datatag
+datetag = paste0("CM",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/home/c.moene/projects/hopping_technology/02_Omar_clone_pools/analysis_",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+```
+
+```{r knits setup}
+
+library(knitr)
+opts_chunk$set(cache = T,
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               dpi = 300,
+               fig.path = paste0(file.path(output_dir), "/contact/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+```{r}
+#cutoff to call an integration local
+distance_local_hop = 2E6
+```
+
+
+# Load processed data #STILL UPDATE WHERE NEEDED
+```{r}
+tib_PB_ints = read_tsv('/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Figure4_nested_transposon_integration_locations/CM20260313_Omar_PB_ints_filtered.tsv')
+
+SB_ints_per_PB_rep = readRDS("/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Figure4_nested_transposon_integration_locations/CM20260330_SB_ints_per_PB_2reps.rds")
+
+
+SB_linked_tib = readRDS("/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Figure4_nested_transposon_integration_locations/CM20260330_PB_linked_filt_SB_ints_2reps.rds")
+
+chrom_PB_comb = readRDS("/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Figure4_nested_transposon_integration_locations/CM20260331_chrom_context_PB_ints.rds")
+
+chr_lengths = read_tsv('/DATA/usr/c.moene/public_data/mm10_chrom_sizes', col_names = 
+          c('chr', 'length')) %>%
+  mutate(chr = factor(chr, levels = c(paste0('chr', 1:19), 'chrX', 'chrY')))
+
+```
+SB_linked_tib contains all SB integrations, with the distance to the closest PB (so not only the filtered local integrations)
+
+
+```{r}
+SB_ints_per_PB_comb = SB_ints_per_PB_rep %>%
+  group_by(parental_clone, chr, start, end, nearest_parental_idx, LP_name) %>% 
+  summarize(N_local_SB_ints = sum(N_local_SB_ints),
+            rel_SB_ints_parental = mean(rel_SB_ints_parental))
+
+
+PB_context_tib_filt_hopef = left_join(chrom_PB_comb, SB_ints_per_PB_comb) %>%
+  filter(removal == "keep") %>%
+  mutate(LP_nr = paste0(parental_clone, "_", nearest_parental_idx))
+```
+These two objects are still based on unique integration count and not read count
+
+# Create virtual 4C
+Try to re-run the virtual 4Cs on all the PB ints
+Then subsample for only the proper ones (the 42 remaining after the filtering int he chromatin context pipeline)
+
+## 25 kb bins
+25kb bins
+```{r}
+# # .hic file
+# exp <- "/DATA/usr/m.eder/Tracks/microC/GSE130275_mESC_WT_combined_2.6B.hic"
+# 
+# # # # load into genova - this takes some time for high resolutions
+# microC_mESC_25kb <- load_contacts(signal_path = exp,
+#                       sample_name = "WT",
+#                       resolution = 25e3)
+# 
+# 
+# # compute virtual 4C for each PB LP
+# tib_PB_ints_gr = tib_PB_ints %>%
+#   mutate(chr = str_remove(chr, "chr")) %>%
+#   GRanges()
+# 
+# virt_4C_LP_ls_25kb = lapply(1:length(tib_PB_ints_gr), function(i){
+#   contacts_obj = virtual_4C(microC_mESC_25kb,  tib_PB_ints_gr[i],
+#                              xlim = c(2E6, 2E6))
+#   contacts_obj$data  %>%
+#     as_tibble() %>%
+#     mutate(LP_name = tib_PB_ints_gr$LP_name[i])
+# })
+# saveRDS(virt_4C_LP_ls_25kb, "/home/c.moene/projects/hopping_technology/02_Omar_clone_pools/rds/CM20260317_virt4C_per_PB_int_25kb.rds")
+
+
+virt_4C_LP_ls_25kb = readRDS( "/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Figure4_nested_transposon_integration_locations/CM20260317_virt4C_per_PB_int_25kb.rds")
+
+virt_4C_tib_25kb = bind_rows(virt_4C_LP_ls_25kb)
+
+```
+
+## 10 kb bins
+10kb bins (for relationship with chromatin state integration site)
+```{r}
+# # .hic file
+# exp <- "/DATA/usr/m.eder/Tracks/microC/GSE130275_mESC_WT_combined_2.6B.hic"
+# 
+# # # # load into genova - this takes some time for high resolutions
+# microC_mESC_10kb <- load_contacts(signal_path = exp,
+#                       sample_name = "WT",
+#                       resolution = 10e3)
+# 
+# 
+# # compute virtual 4C for each PB LP
+# tib_PB_ints_gr = tib_PB_ints %>%
+#   mutate(chr = str_remove(chr, "chr")) %>%
+#   GRanges()
+# 
+# virt_4C_LP_ls_10kb = lapply(1:length(tib_PB_ints_gr), function(i){
+#   contacts_obj = virtual_4C(microC_mESC_10kb,  tib_PB_ints_gr[i],
+#                              xlim = c(2E6, 2E6))
+#   contacts_obj$data  %>%
+#     as_tibble() %>%
+#     mutate(LP_name = tib_PB_ints_gr$LP_name[i])
+# })
+# saveRDS(virt_4C_LP_ls_10kb, "/home/c.moene/projects/hopping_technology/02_Omar_clone_pools/rds/CM20260316_virt4C_per_PB_int_10kb.rds")
+
+
+virt_4C_LP_ls_10kb = readRDS( "/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Figure4_nested_transposon_integration_locations/CM20260316_virt4C_per_PB_int_10kb.rds")
+
+virt_4C_tib_10kb = bind_rows(virt_4C_LP_ls_10kb)
+
+```
+
+
+## Filter for non-problematic PBs
+Filter for only those PBs that are properly mappable etc in the chromatin background analysis
+```{r}
+
+PB_context_2000_tib_filt_hopef = PB_context_tib_filt_hopef %>% filter(window_size == 2000)
+
+tib_PB_ints_sel = tib_PB_ints %>%
+  filter(LP_name %in% unique(PB_context_2000_tib_filt_hopef$LP_name))
+  
+virt_4C_tib_25kb_sel = virt_4C_tib_25kb %>%
+  filter(LP_name %in% unique(PB_context_2000_tib_filt_hopef$LP_name)) %>%
+  dplyr::rename(mid_bin = mid,
+                contact = WT) %>%
+  mutate(binwidth = 25000) %>%
+  mutate(start_bin = mid_bin - binwidth/2,
+         end_bin = mid_bin + binwidth/2,
+         ) %>%
+  left_join(tib_PB_ints_sel) %>%
+  mutate(dist_from_PB = mid_bin - start)
+
+virt_4C_tib_10kb_sel = virt_4C_tib_10kb %>%
+  filter(LP_name %in% unique(PB_context_2000_tib_filt_hopef$LP_name)) %>%
+  dplyr::rename(mid_bin = mid,
+                contact = WT) %>%
+  mutate(binwidth = 10000) %>%
+  mutate(start_bin = mid_bin - binwidth/2,
+         end_bin = mid_bin + binwidth/2,
+         ) %>%
+  left_join(tib_PB_ints_sel) %>%
+  mutate(dist_from_PB = mid_bin - start)
+  
+```
+
+
+# Correlate with hopping
+
+## 25kb bin size
+Need to 'fill in' all the bins that have 0 contact. The 4C bins are on round numbers of 5000. So I need to start by finding the bin border close to the LP.
+Then make a tibble with all possible bins +-2Mb from LP
+
+```{r}
+all_bin_borders_tib_25kb = tib_PB_ints_sel %>%
+  mutate(binwidth = 25000) %>%
+  mutate(bin_border_at_LP = floor(start/binwidth)*binwidth,
+         first_bin_border = bin_border_at_LP-2E6,
+         last_bin_border =  bin_border_at_LP+2E6 + binwidth) %>%
+  rowwise() %>%
+  mutate(bin = list(seq(first_bin_border, last_bin_border, by = binwidth))) %>%
+  unnest(bin) %>%
+  ungroup() %>%
+  dplyr::rename(start_bin = bin) %>%
+  mutate(end_bin = start_bin + binwidth,
+         mid_bin = start_bin + binwidth/2,
+         dist_from_PB = mid_bin - start,
+         chromosome = str_remove(chr, "chr"))
+
+all_bin_borders_tib_ls_25kb = all_bin_borders_tib_25kb %>%
+  group_by(parental_clone) %>%
+  group_split()
+
+names(all_bin_borders_tib_ls_25kb) = c("WT78", "WT79", "WT83")
+```
+
+Link to SB read count
+```{r}
+
+SB_ints_by_contact_ls_25kb = lapply(c("WT78", "WT79", "WT83"), function(cl){
+  intervals_4c_tib =  all_bin_borders_tib_ls_25kb[[cl]] %>%
+    mutate(rownr = row_number())
+  
+  intervals_4c = intervals_4c_tib %>%
+    select(chr, start_bin, end_bin, parental_clone) %>%
+    dplyr::rename(start = start_bin, end = end_bin) %>%
+    GRanges()
+  
+  ints_in_cl = SB_linked_tib %>% 
+    uncount(read_count) %>% #count individual reads instead of integrations!
+    filter(parental_clone == cl) %>%
+    select(chr, start, end) %>%
+    GRanges()
+  
+  N_SB_reads_per_interval = findOverlaps(intervals_4c, ints_in_cl, ignore.strand = T) %>%
+    as_tibble() %>%
+    group_by(queryHits) %>%
+    summarize(N_SB_reads = n())
+  
+  intervals_4c_tib %>%
+    left_join(N_SB_reads_per_interval, join_by(rownr == queryHits)) %>%
+    mutate(N_SB_reads = replace_na(N_SB_reads, 0))
+})
+
+SB_ints_by_contact_tib_25kb = bind_rows(SB_ints_by_contact_ls_25kb) %>%
+  left_join(virt_4C_tib_25kb_sel) %>%
+  mutate(contact = na.replace(contact, 0))
+
+```
+25kb bins give no 0 contact, so that is nice.
+
+
+##25kb bin, no psuedocounts
+The psuedocounting is a bit risky: the amount of 0 bins depends on the hopping efficiency (and the bin size), which can depend on chromatin context. 
+It is safer to just remove all zero bins and only look at the correlation in those regions where there is measurable contact and hopping
+
+
+### summary of spearman cor
+
+All distance, spearman correlation
+```{r 4D_spearman_cor_per_LP_boxplot_close}
+correlation_test_per_LP_spear_25kb = SB_ints_by_contact_tib_25kb %>%
+  mutate(dist_from_LP = abs(mid_bin - start)) %>%
+  filter(contact > 0 & N_SB_reads > 0) %>%
+  filter(dist_from_LP <= 0.5E6) %>%
+  group_by(LP_name) %>%
+  summarize(cor_contact = cor.test(log10(N_SB_reads), log10(contact), method = 'spearman')$estimate,
+            pval_contact = cor.test(log10(N_SB_reads), log10(contact), method = 'spearman')$p.val,
+            cor_dist = cor.test(log10(N_SB_reads), log10(dist_from_LP), method = 'spearman')$estimate,
+            pval_dist = cor.test(log10(N_SB_reads), log10(dist_from_LP), method = 'spearman')$p.val,,
+            cor_contact_to_dist = cor.test(log10(dist_from_LP), log10(contact), method = 'spearman')$estimate)
+
+set.seed(1234)
+correlation_test_per_LP_spear_25kb %>%
+  pivot_longer(cols = -c('LP_name', 'cor_contact_to_dist'),
+               names_to = c(".value", "type"),
+               names_pattern = "(cor|pval)_(contact|dist)") %>%
+  ggplot( aes(x = type, y = abs(cor))) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.2, aes(col = abs(cor_contact_to_dist))) +
+  scale_y_continuous(limits = c(0, 1)) +
+  theme_bw() +
+  xlab('correlation with...')+
+  ylab('absolute spearman correlation') +
+  scale_color_viridis_c() 
+
+```
+Note: difference between dist and contact only occurs when you filter for local (< 0.5 Mb), otherwise dist and contact are very similar. 
+
+
+### all LPs combined
+```{r}
+SB_ints_by_contact_tib_25kb_2 = SB_ints_by_contact_tib_25kb %>%
+  group_by(LP_name) %>%
+  mutate(SB_reads_total = sum(N_SB_reads),
+         fract_SB_reads = N_SB_reads/ SB_reads_total
+         )
+
+```
+
+
+```{r 4D_correlation_contact_all_LP_comb_density}
+
+
+library(ggpointdensity)
+all_reads_contact_plot_density = SB_ints_by_contact_tib_25kb_2 %>%
+  filter(contact > 0 & N_SB_reads > 0) %>%
+  ggplot(aes(x = contact, y = fract_SB_reads)) +
+  stat_cor(label.y.npc = 'top', vjust = 1, method = 'spearman') +
+  # geom_point(alpha = 0.2, stroke = NA)+
+  geom_pointdensity(adjust = 0.5, size = 0.4) +
+  # geom_smooth(method = 'lm') +
+  stat_regline_equation(label.y.npc = 0.8)+
+  scale_x_log10()+
+  scale_y_log10()+ 
+  theme_classic() +
+  # theme(legend.position =  'none') +
+  theme(legend.position =  'bottom')  +
+  ylab('fraction of SB reads per bin')+
+  scale_color_viridis_c()
+
+all_reads_contact_plot_density
+```
+
+```{r 4E_correlation_distance_all_LP_comb}
+SB_ints_by_contact_tib_25kb_2 %>%
+  filter(contact > 0 & N_SB_reads > 0) %>%
+  ggplot(aes(x = abs(dist_from_PB), y = fract_SB_reads)) +
+  stat_cor(label.y.npc = 'bottom', vjust = 1, method = 'spearman') +
+  stat_regline_equation()+
+  geom_point(alpha = 0.2, stroke = NA)+
+  geom_smooth(method = 'lm') +
+  scale_x_log10(labels = scales::unit_format(scale = 1E-3, accuracy = 1, unit=NULL))+
+  scale_y_log10()+ 
+  theme_classic() +
+  theme(legend.position =  'none')  +
+  xlab('distance from LP (kb)')+
+  ylab('fraction of SB reads per bin')
+
+```
+
+
+```{r 4E_correlation_distance_all_LP_comb_density}
+all_reads_distance_plot_density = SB_ints_by_contact_tib_25kb_2 %>%
+  filter(contact > 0 & N_SB_reads > 0) %>%
+  ggplot(aes(x = abs(dist_from_PB), y = fract_SB_reads)) +
+  stat_cor(label.y.npc = 'bottom', vjust = 1, method = 'spearman') +
+  stat_regline_equation()+
+  # geom_point(alpha = 0.2, stroke = NA)+
+  geom_pointdensity(adjust = 0.5, size = 0.4) +
+  # geom_smooth(method = 'lm') +
+  scale_x_log10(labels = scales::unit_format(scale = 1E-3, accuracy = 1, unit=NULL))+
+  scale_y_log10()+ 
+  theme_classic() +
+  theme(legend.position =  'bottom')  +
+  xlab('distance from LP (kb)')+
+  ylab('fraction of SB reads per bin') +
+  scale_color_viridis_c()
+all_reads_distance_plot_density
+```
+
+```{r 4DE_correlation_contact_distance_all_LP_comb_density, fig.width=10, fig.height = 4}
+cowplot::plot_grid(all_reads_contact_plot_density, all_reads_distance_plot_density, nrow = 1)
+
+
+```
+
+
+
+
+What if we filter for close (< 0.5 Mb) for all LPs combined
+```{r S5D_correlation_contact_all_LP_comb_close}
+
+close_reads_contact_plot_scatter =  SB_ints_by_contact_tib_25kb_2 %>%
+  filter(contact > 0 & N_SB_reads > 0) %>%
+  filter(abs(dist_from_PB) < 0.5E6) %>%
+  ggplot(aes(x = contact, y = fract_SB_reads)) +
+  stat_cor(label.y.npc = 'top', vjust = 1, method = 'spearman') +
+  stat_regline_equation()+
+  geom_point(alpha = 0.2, stroke = NA)+
+  geom_smooth(method = 'lm') +
+  stat_regline_equation(label.y.npc = 0.8)+
+  scale_x_log10()+
+  scale_y_log10()+ 
+  theme_classic() +
+  theme(legend.position =  'none')+
+  ylab('fraction of SB reads per bin')
+close_reads_contact_plot_scatter 
+```
+
+```{r S5E_correlation_distance_all_LP_comb_close}
+close_reads_distance_plot_scatter = SB_ints_by_contact_tib_25kb_2 %>%
+  filter(contact > 0 & N_SB_reads > 0) %>%
+  filter(abs(dist_from_PB) < 0.5E6) %>%
+  ggplot(aes(x = abs(dist_from_PB), y = fract_SB_reads)) +
+  stat_cor(label.y.npc = 'bottom', vjust = 1, method = 'spearman') +
+  stat_regline_equation()+
+  geom_point(alpha = 0.2, stroke = NA)+
+  geom_smooth(method = 'lm') +
+  scale_x_log10(labels = scales::unit_format(scale = 1E-3, accuracy = 1, unit=NULL))+
+  scale_y_log10()+ 
+  theme_classic() +
+  theme(legend.position =  'none') +
+  xlab('distance from LP (kb)')+
+  ylab('fraction of SB reads per bin')
+close_reads_distance_plot_scatter
+```
+Filtering for close integrations the correlation also is a bit stronger with contact than with linear distance.
+
+```{r S5DE_correlation_contact_distance_allLP_comb_close, fig.width = 6, fig.height = 7 }
+cowplot::plot_grid(close_reads_contact_plot_scatter, close_reads_distance_plot_scatter, ncol = 1)
+```
+
+### Example plots
+Also make matching example plots with the same filtering
+```{r 4_extra_correlations_example_LPs}
+example_LP_1 = "WT78_chr10_42273274" #very assymmetric, with lower correlation with linear distance
+example_LP_2 = "WT79_chr12_57383208"
+
+set.seed(1234)
+correlation_test_per_LP_spear_25kb %>%
+    pivot_longer(cols = -c('LP_name', 'cor_contact_to_dist'),
+                 names_to = c(".value", "type"),
+                 names_pattern = "(cor|pval)_(contact|dist)") %>%
+  mutate(example_LP = case_when(LP_name %in% c(example_LP_1, example_LP_2) ~ LP_name,
+                                .default = 'not_example'
+         )) %>%
+    ggplot( aes(x = type, y = abs(cor))) +
+    geom_boxplot(outlier.shape = NA) +
+    geom_jitter(width = 0.2, aes(col = factor(example_LP))) +
+    scale_y_continuous(limits = c(0, 1)) +
+    theme_bw() +
+    xlab('correlation with...')+
+    ylab('absolute spearman correlation') 
+
+```
+
+
+```{r 4B_example_LPs_fractreads_and_contact}
+contact_cutoff_plot = 500
+
+plot_example_hopping2 = SB_ints_by_contact_tib_25kb_2 %>% 
+  filter(LP_name %in% c(example_LP_1, example_LP_2)) %>%
+  ggplot(aes(x = dist_from_PB, y = fract_SB_reads)) +
+  facet_wrap(~LP_name) +
+  geom_col(linetype = NA) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0,0.02))) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 5),
+                     labels = scales::unit_format(scale = 1E-6, accuracy = 1, unit=NULL), expand = c(0,0)) +
+  xlab('distance from LP (Mb)') +
+  ylab('fraction of SB reads per 25kb interval')+
+  theme_bw()
+
+plot_example_contact2 = SB_ints_by_contact_tib_25kb %>% 
+  filter(LP_name %in% c(example_LP_1, example_LP_2)) %>%
+  # filter(contact >0 & N_SB_ints >0) %>%
+  mutate(contact_cutoff = case_when(contact > contact_cutoff_plot ~
+                                      contact_cutoff_plot,
+                                    .default = contact))  %>%
+  ggplot(aes(x = dist_from_PB, y = contact_cutoff)) +
+  facet_wrap(~LP_name)+
+  geom_col(linetype = NA) +
+  scale_y_continuous(limits = c(0, contact_cutoff_plot), expand = c(0,0)) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 5),
+                     labels = scales::unit_format(scale = 1E-6, accuracy = 1, unit=NULL), expand = c(0,0)) +
+  xlab('distance from LP (Mb)') +
+  ylab('contact')+
+  theme_bw()
+
+cowplot::plot_grid(plot_example_hopping2,
+  plot_example_contact2,
+                   align = "v", axis = "lr", ncol = 1, 
+                   rel_heights  = c(2, 1))
+```
+
+
+```{r 4F_example_LPs_cor_contact}
+SB_ints_by_contact_tib_25kb_2 %>% 
+  filter(LP_name %in% c(example_LP_1, example_LP_2)) %>%
+  filter(contact >0 & N_SB_reads >0) %>%
+  ggplot(aes(x = contact, y = fract_SB_reads)) +
+  facet_grid(~LP_name) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  scale_x_log10() +
+  scale_y_log10()+
+  stat_cor() +
+  theme_bw() + 
+  ylab('fraction of SB reads per bin') +
+  theme(aspect.ratio = 1)
+```
+# Effect chromatin launch site
+
+On 25kb bins. This is slightly different form the analysis below, because here I use the actual chromatin at the 2kb surrounding the LP (as used in figure 2 for the transposition efficiency), while below (on the 10kb analysis) I use the whole 10kb bin with the LP in it (those 10kb bins are also not centered on the LP). 
+
+
+```{r S5F_contact_correlation_by_LP_chromatin, fig.width = 15}
+
+library(ggnewscale)
+SB_ints_by_contact_tib_25kb_norm = SB_ints_by_contact_tib_25kb_2 %>%
+  filter(contact > 0 & fract_SB_reads > 0 ) %>%
+  mutate(log10_fract_reads = log10(fract_SB_reads),
+         log10_contact = log10(contact))
+
+contact_slope_tib_25kb_LPchrom_binary  = PB_context_tib_filt_hopef %>% 
+  filter(window_size == 2000) %>%
+  mutate(LP_feature_state = case_when(zscore>0 ~ 'high',
+                                   .default = 'low')) %>%
+  left_join(SB_ints_by_contact_tib_25kb_norm, relationship = 'many-to-many') #for each LP, multiple LP chromatin features & multiple contact bins
+  
+#colors
+colscale_chrom_bins_line =  scale_colour_manual(values = c(low = 'grey30', high = 'darkorchid4'), aesthetics = c('col', 'fill'))
+colscale_chrom_bins_points =  scale_colour_manual(values = c(low = 'grey60', high = 'orchid'), aesthetics = c('col'))
+
+tib_for_plot_LP_chrom_state_25kb =
+  contact_slope_tib_25kb_LPchrom_binary %>%
+  filter(!feature %in% c("TTseq_fw", "TTseq_rv", "input_1", "input_2")) %>%
+  slice_sample(prop = 1, replace = F) #randomly shuffle rows, to get random dataponts on top in overplotting
+
+N_LPs_per_group = contact_slope_tib_25kb_LPchrom_binary %>%
+  filter(!feature %in% c("TTseq_fw", "TTseq_rv", "input_1", "input_2")) %>%
+  dplyr::select(LP_name, feature, LP_feature_state) %>% 
+  distinct() %>%
+  group_by(feature, LP_feature_state) %>% 
+  summarize(N = n()) %>%
+  mutate(y_pos = case_when(LP_feature_state == "high" ~ 10^-3 ,
+                           .default = c(10^-3.5))) 
+
+ggplot(tib_for_plot_LP_chrom_state_25kb, aes(x = contact, y = fract_SB_reads, col = LP_feature_state)) +
+  facet_wrap(~feature) +
+  #plot points
+  ggrastr::rasterise( geom_point( alpha = 0.1, stroke = NA), dpi = 900) +
+ 
+  colscale_chrom_bins_points +
+  
+  #plot lines, with a new  color scale
+  new_scale_color() +
+  colscale_chrom_bins_line +
+  geom_smooth(method = 'lm', aes(col = LP_feature_state)) +
+  
+  #add text annotations
+  # stat_regline_equation(aes(col = LP_feature_state))+
+  geom_text( aes(x = 10^3, y =y_pos, #bottom right corner
+                 label = paste0("n = ", N),
+                 col = LP_feature_state),
+             data = N_LPs_per_group,
+             )+
+  
+  #layout
+  scale_x_log10(labels = scales::label_number()) +
+  scale_y_log10(labels = scales::label_number())+
+  ylab('fraction of SB reads per bin') +
+  theme_bw()+
+  theme(aspect.ratio = 1) 
+```
+
+
+chromatin at launch site, one example
+```{r 4H_contact_correlation_by_LP_H3K9me3, fig.width = 4}
+
+ggplot(filter(tib_for_plot_LP_chrom_state_25kb, feature == "H3K9me3_pADam"), aes(x = contact, y = fract_SB_reads, col = LP_feature_state)) +
+  facet_wrap(~feature) +
+  #plot points
+   ggrastr::rasterise( geom_point( alpha = 0.2, stroke = NA) , dpi = 900) +
+  colscale_chrom_bins_points +
+  
+  #plot lines, with a new  color scale
+  new_scale_color() +
+  colscale_chrom_bins_line +
+  geom_smooth(method = 'lm', aes(col = LP_feature_state)) +
+  
+  #add text annotations
+  stat_regline_equation(aes(col = LP_feature_state))+
+  geom_text( aes(x = 10^3, y =y_pos, #bottom right corner
+                 label = paste0("n = ", N),
+                 col = LP_feature_state),
+             data = filter(N_LPs_per_group, feature == "H3K9me3_pADam"),
+             )+
+  
+  #layout
+  scale_x_log10(labels = scales::label_number()) +
+  scale_y_log10(labels = scales::label_number())+
+  ylab('fraction of SB reads per bin') +
+  theme_bw()+
+  theme(aspect.ratio = 1) 
+```
+
+# Effect chromatin integration site
+
+## contact vs integration on 10kb bins
+I would like to compare the density of integrations (N ints per bin) with the chromatin state at that bin, corrected for contact. 
+I will first try this with the 10kb bins. Correlation with contact is okay at 10kb resolution and it gives a bit more relevant bins to work with than the 25kb binning.
+
+```{r}
+all_bin_borders_tib_10kb = tib_PB_ints_sel %>%
+  mutate(binwidth = 10000) %>%
+  mutate(bin_border_at_LP = floor(start/binwidth)*binwidth,
+         first_bin_border = bin_border_at_LP-2E6,
+         last_bin_border =  bin_border_at_LP+2E6 + binwidth) %>%
+  rowwise() %>%
+  mutate(bin = list(seq(first_bin_border, last_bin_border, by = binwidth))) %>%
+  unnest(bin) %>%
+  ungroup() %>%
+  dplyr::rename(start_bin = bin) %>%
+  mutate(end_bin = start_bin + binwidth,
+         mid_bin = start_bin + binwidth/2,
+         dist_from_PB = mid_bin - start,
+         chromosome = str_remove(chr, "chr")) 
+
+all_bin_borders_tib_ls_10kb = all_bin_borders_tib_10kb %>%
+  group_by(parental_clone) %>%
+  group_split()
+
+names(all_bin_borders_tib_ls_10kb) = c("WT78", "WT79", "WT83")
+```
+
+Link to SB counts
+```{r}
+
+SB_ints_by_contact_ls_10kb = lapply(c("WT78", "WT79", "WT83"), function(cl){
+  intervals_4c_tib =  all_bin_borders_tib_ls_10kb[[cl]] %>%
+    mutate(rownr = row_number())
+  
+  intervals_4c = intervals_4c_tib %>%
+    select(chr, start_bin, end_bin, parental_clone) %>%
+    dplyr::rename(start = start_bin, end = end_bin) %>%
+    GRanges()
+  
+  ints_in_cl = SB_linked_tib %>% 
+    uncount(read_count) %>% #count individual reads instead of integrations!
+    filter(parental_clone == cl) %>%
+    select(chr, start, end) %>%
+    GRanges()
+  
+  N_SB_reads_per_interval = findOverlaps(intervals_4c, ints_in_cl, ignore.strand = T) %>%
+    as_tibble() %>%
+    group_by(queryHits) %>%
+    summarize(N_SB_reads = n())
+  
+  intervals_4c_tib %>%
+    left_join(N_SB_reads_per_interval, join_by(rownr == queryHits)) %>%
+    mutate(N_SB_reads = replace_na(N_SB_reads, 0))
+})
+
+SB_ints_by_contact_tib_10kb = bind_rows(SB_ints_by_contact_ls_10kb) %>%
+  left_join(virt_4C_tib_10kb_sel) %>%
+  mutate(contact = na.replace(contact, 0)) %>%
+  group_by(LP_name) %>%
+  mutate(SB_reads_total = sum(N_SB_reads),
+         fract_SB_reads = N_SB_reads / SB_reads_total
+  ) %>%
+  ungroup()
+
+
+```
+
+As a sanity check, do we get similar results as for the 25kb bins above?
+```{r }
+
+SB_ints_by_contact_tib_10kb %>%
+  filter(contact > 0 & N_SB_reads > 0) %>%
+  ggplot(aes(x = contact, y = fract_SB_reads)) +
+  stat_cor(label.y.npc = 'top', vjust = 1, method = 'spearman') +
+  geom_point(alpha = 0.2, stroke = NA)+
+  geom_smooth(method = 'lm') +
+  stat_regline_equation(label.y.npc = 0.8)+
+  scale_x_log10()+
+  scale_y_log10()+ 
+  theme_classic() +
+  theme(legend.position =  'none') +
+  ylab('fraction of SB reads per bin')
+
+```
+Yes, the slope is still 0.78, so analysis on 10kb bins gives a similar relationship as on 25kb bins.
+
+
+## export bin midpoints
+So I can run the chromatin quantification pipeline on all these bins.
+```{r}
+bin_midpoint_tib = SB_ints_by_contact_tib_10kb %>%
+  mutate(barcode = paste0(LP_name, "_", mid_bin),
+         start = mid_bin) %>%
+  left_join(chr_lengths) %>%
+  filter(end_bin < length) %>% #remove bins that extend beyond the end of the chromosome
+  dplyr::select(barcode, chr, start)
+
+# write_tsv(bin_midpoint_tib, '/DATA/shared/projects/local_hopping/hopping_technology/02_Omar_clone_pools/CM20260325_LP_surrounding_bins.tsv')
+```
+
+## process chromatin data
+```{r}
+#load the background processed tibble
+genomic_background_comb = readRDS('/home/c.moene/projects/hopping_technology/01_genomewide_chromatin_background/rds/CM20260330_summary_stats_chrom_background.rds')
+
+#load the encode blacklist regions
+blacklist_bed = read_tsv('/DATA/shared/projects/local_hopping/hopping_technology/01_genomewide_chromatin_context/encode_mm10_blacklist.v2.bed', col_names = c("chr", "start", "end", "type"))
+
+```
+
+```{r}
+#location of the pipeline output files
+path_context_10000_bins = '/DATA/shared/projects/local_hopping/hopping_technology/02_Omar_clone_pools/CM20260310_local_context/coverage_results/LP_surrounding_bins_10kb-10000_summary.txt'
+
+#features we want to process
+features_oi = c("'H3K9me3_pADam'",  "'LB1_pADam'" , #heterochromatin
+                "'EZH2'", "'H3K27me3-2i'", #polycomb
+                "'RAD21'" , "'CTCF'", #3D genome
+                "'H3K27ac-2i'", "'p300-2i'", #euchromatin
+                "'ATAC'", "'DNase'", #accessibility
+                "'H3K36me3'", "'POLR2A'", "'TTseq_fw'", "'TTseq_rv'", #transcription
+                "'MED1'", "'H3K4me1'", "'H3K4me3'", #CRE
+                "'input_1'", "'input_2'" #input samples
+                )
+
+#load the tibbles
+bins_tib_oi_10000 = read_tsv(path_context_10000_bins) %>%
+  dplyr::select(any_of(c("#'chr'","'start'","'end'" , features_oi)))
+
+
+chrom_bin_10000 = chrom_insert_sites(bins_tib_oi_10000,
+                                   filter(genomic_background_comb, window_size == '10000'), #load properly
+                                   blacklist_bed,
+                                       log_features = c("LB1_pADam", "H3K9me3_pADam"), 
+                                       non_cistrome_features = c("TTseq_fw", "TTseq_rv"),
+                                       input_cols = c("input_1", "input_2")     
+)
+
+chrom_bins = chrom_bin_10000 %>%
+  dplyr::rename(start_interval = start, end_interval = end)
+
+```
+
+```{r}
+chrom_bins_filt = chrom_bins %>%
+  filter(removal == "keep")
+```
+
+
+## link to contact
+make a wide tibble that has the correct boundaries (matching the contact tibble)
+```{r}
+chrom_bins_filt_forlink= chrom_bins_filt %>%
+  distinct() %>% #there are a few duplicate bins, from LPs (in different clones) that are <4 Mb apart
+  dplyr::rename(start_bin = start_interval) %>%
+  mutate(end_bin = end_interval + 1) %>% #to make it match the bins in the microC object
+  dplyr::select(-end_interval)
+
+chrom_bins_filt_forlink_wide = chrom_bins_filt_forlink %>%
+  select(chr, start_bin, end_bin, feature, zscore) %>%
+  pivot_wider(names_from = feature, values_from = zscore)
+
+SB_ints_by_contact_tib_10kb_chrom = SB_ints_by_contact_tib_10kb %>%
+  left_join(chrom_bins_filt_forlink_wide)
+
+```
+
+
+## plot binarized (high/low)
+
+Calculate systematically for each mark
+```{r }
+
+library(ggh4x)
+
+#binarize all features
+SB_ints_by_contact_tib_10kb_chrom_binary = SB_ints_by_contact_tib_10kb_chrom %>% 
+  pivot_longer(cols = unique(chrom_bins_filt$feature),
+               names_to = 'feature',
+               values_to = 'zscore') %>%
+    filter(contact >0 & N_SB_reads >0 & !is.na(zscore)) %>% #NAs occur in the chrom tibble when bins were filtered out
+  mutate(feature_state = case_when(zscore>0 ~ 'high',
+                                   .default = 'low')) %>%
+  group_by(LP_name, feature) %>%
+  mutate(fract_high = sum(feature_state == 'high')/length(feature_state)) 
+
+#collect features at LP
+feature_states_LP = SB_ints_by_contact_tib_10kb_chrom_binary %>%
+  filter(bin_border_at_LP == start_bin) %>%
+  select(parental_clone, LP_name, feature, feature_state) %>%
+  dplyr::rename(LP_feature_state = feature_state)
+```
+
+
+plot insertion site chromatin
+```{r S5G_chromatin_insertion_site, fig.width = 16}
+#colors
+colscale_chrom_bins_line =  scale_colour_manual(values = c(low = 'grey30', high = 'orange4'), aesthetics = c('col', 'fill'))
+colscale_chrom_bins_points =  scale_colour_manual(values = c(low = 'grey70', high = 'orange2'), aesthetics = c('col'))
+
+#plot
+set.seed(1221)
+SB_ints_by_contact_tib_10kb_chrom_binary %>%
+  left_join(feature_states_LP) %>%
+  filter(fract_high > 0.3 & fract_high < 0.7) %>% #select regions that have both high LB1 and low LB1 bins
+  filter(!is.na(feature_state) & !is.na(LP_feature_state)) %>% #remove filtered bins an noTTseq signal bins
+  filter(!feature %in% c("TTseq_fw", "TTseq_rv", "input_1", "input_2")) %>%
+  slice_sample(prop = 1, replace = F) %>% #randomly shuffle rows, to get random dataponts on top in overplotting 
+  ggplot(aes(x = contact, y = fract_SB_reads, col = feature_state)) +
+  facet_wrap(~feature,  ncol = 4) +
+  
+  ggrastr::rasterise( geom_point( alpha = 0.3, stroke = NA), dpi = 900) +
+  colscale_chrom_bins_points +
+  
+  #lines, set new color scale 
+  new_scale_color() +
+  colscale_chrom_bins_line +
+  geom_smooth(method = 'lm', aes(col = feature_state)) +
+  # stat_regline_equation(label.y.npc = 1,aes(col = feature_state))+
+   
+  #layout
+  scale_x_log10(labels = scales::label_number()) +
+  scale_y_log10(labels = scales::label_number())+
+  ylab('fraction of SB reads per bin') +
+  theme_bw()+
+  theme(aspect.ratio = 1) 
+
+```
+
+
+One example mark for main fig
+```{r 4_DNase_insertion_site_example, fig.width = 4}
+#colors
+colscale_chrom_bins_line =  scale_colour_manual(values = c(low = 'grey30', high = 'orange4'), aesthetics = c('col', 'fill'))
+colscale_chrom_bins_points =  scale_colour_manual(values = c(low = 'grey70', high = 'orange2'), aesthetics = c('col'))
+
+#plot
+set.seed(1221)
+SB_ints_by_contact_tib_10kb_chrom_binary %>%
+  left_join(feature_states_LP) %>%
+  filter(fract_high > 0.3 & fract_high < 0.7) %>% #select regions that have both high LB1 and low LB1 bins
+  filter(!is.na(feature_state) & !is.na(LP_feature_state)) %>% #remove filtered bins an noTTseq signal bins
+  filter(feature=='DNase') %>%
+  slice_sample(prop = 1, replace = F) %>% #randomly shuffle rows, to get random dataponts on top in overplotting 
+  ggplot(aes(x = contact, y = fract_SB_reads, col = feature_state)) +
+  facet_wrap(~feature,  ncol = 4) +
+  ggrastr::rasterise( geom_point( alpha = 0.3, stroke = NA), dpi = 900)  +
+  colscale_chrom_bins_points +
+  
+  #lines, set new color scale 
+  new_scale_color() +
+  colscale_chrom_bins_line +
+  geom_smooth(method = 'lm', aes(col = feature_state)) +
+  stat_regline_equation(label.y.npc = 1,aes(col = feature_state))+
+   
+  #layout
+  scale_x_log10(labels = scales::label_number()) +
+  scale_y_log10(labels = scales::label_number())+
+  ylab('fraction of SB reads per bin') +
+  theme_bw()+
+  theme(aspect.ratio = 1) 
+
+```
+

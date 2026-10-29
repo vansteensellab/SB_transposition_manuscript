@@ -1,0 +1,1834 @@
+---
+title: "me20260326_Hop_eff_vs_insert_activity"
+author: "Mathias"
+date: "2026-03-26"
+output: 
+  html_document:
+    theme: journal #cerulean
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+  editor_options:
+    chunk_output_type: console
+---
+
+
+# Aim:
+Here we want to investigate if the transposon insert determines hopping efficiency. 
+To do so we have different options. First we want to plot the hopping efficiency of all constructs from LP-116kb in the Sox2 locus, to establish the notion that the insert matters to hopping from the same LP. 
+Then use TF reporters, same location (N1), different activities. Would expect a negative correlation between activity and hopping efficiency. 
+Do the same comparisons for NanogS and NanogL in the same locus. 
+Compare Sox2P in WT vs DelE vs DelE vs mCh_del (need to think if we can use mCh_del for this)
+
+
+## TF reporter inserts
+pLD01 - NanogP_S with SV40 polyA in right direction, otherwise insert is same as in pCM008
+
+
+## NOTE
+E2866 has been sorted for GFP- cells after the barcoding, therefore we do not use it in this analysis. 
+We only use E2828.
+
+# Setup
+```{r}
+library(GenomicRanges)
+library(rtracklayer)
+library(gtools)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggh4x)
+library(stringr)
+library(readr)
+library(knitr)
+library(cowplot)
+library(ggpubr)
+library(ggrepel)
+library(import)
+library(ggh4x)
+library(cowplot)
+import::from(flowCore, .except=c("filter")) #I don't load the whole flowCore and ggcyto libraries, because they overwrite dplyr's filter function :0
+import::from(ggcyto, 'fortify_fs')
+library(flowDensity)
+
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(Biostrings)
+library(ggseqlogo)
+library(ShortRead)
+library(GGally)
+
+library(ggbeeswarm)
+library(scales)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+```
+
+## Paths & parameters
+```{r paths_parameters}
+
+#datatag
+datetag = paste0("ME",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/home/c.moene/projects/hopping_technology/04_Hopping_eff_insert_activity/analysis_",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+```
+
+```{r knits setup}
+
+library(knitr)
+opts_chunk$set(cache = T,
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               dpi = 300,
+               fig.path = paste0(output_dir, "/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+# Load Hopping efficiencies
+Load hopping efficiencies from all hopping experiments
+```{r}
+# List all files
+metadata <- tibble(file = dir('/home/c.moene/projects/hopping_technology/03_hopping_eff_single_LPs/pipeline_home_loc_count/output_ME20260326', 
+                   recursive = T, full.names = T)) %>%
+  mutate(sample = str_remove(basename(file), "\\..*"))
+
+
+# Load all files
+hopping_eff_tib <- bind_rows(lapply(1:nrow(metadata),
+                        function(i) {
+                          tmp <- read_tsv(metadata$file[i],
+                                          col_types = cols(
+                                            .default = col_character(),
+                                            total_reads  = col_double(),
+                                            home_reads  = col_double(),
+                                            fract_home_reads = col_double())) %>%
+                            mutate(sample = metadata$sample[i])
+                        }))
+
+hopping_eff_tib = hopping_eff_tib %>%
+  mutate(orientation = case_when(grepl("Fw|fw", sample_name) ~ "fw",
+                                 grepl("Rv|rv", sample_name) ~ "rv",
+                                 .default = 'unknown'))
+
+#write_tsv(hopping_eff_tib, "/home/c.moene/projects/hopping_technology/04_Hopping_eff_insert_activity/ME20260326_hopping_efficiency_table.tsv")
+```
+
+## Curate dataset - remove bad samples
+Notes: there seems to be something wrong with the fw mapping of E1792_N31_D11_fw, E1792_N37_D4_fw, E1792_N37_D11_fw (very few reads and basically no home reads). I filter for samples that have sufficient reads:
+```{r}
+#check how many samples have low total reads
+hopping_eff_tib %>% filter(total_reads < 500) %>% pull(sample_name)
+hopping_eff_tib %>% filter(home_reads < 100) %>% pull(sample_name)
+
+#How different are the Tdgf1 samples
+hopping_eff_tib %>% filter(grepl("Tdgf1", sample_name))
+
+#Set filter so that Tdgf1 is included but the bad home location samples are not
+hopping_eff_tib_filt_2 = hopping_eff_tib %>%
+  dplyr::filter(home_reads >= 15)
+```
+Filtering this way removes most of the Tdgf1 samples, apparently they are sequenced very shallow. 
+The fract_home reads of the samples is between 22-36% and it looks like the fraction is increasing with later timepoints of harvested gDNA. This could indicate that there is still hopping going on, specially between D4 and D8. 
+
+
+## Annotate tibble
+Caution with the following samples:
+**E2866**: Cells were sorted for GFP-, so they are biased not just for barcoded cells but also for hopped integrations to a silent location, so not really fair to use them. 
+**E2143**: These cells are a mix of pCM008 and pCM10, do not use therefore. 
+```{r}
+hopping_eff_tib_wide = hopping_eff_tib_filt_2 %>%
+  mutate(sample_base = str_remove(sample_name, "_(Fw|Rv|fw|rv)$")) %>%
+  select(-sample, -sample_name, -total_reads, -home_reads) %>%
+  pivot_wider(id_cols = c(sample_base, launch_pad), names_from = orientation, values_from = fract_home_reads) %>%
+   rowwise() %>%
+  mutate(
+         fw_over_rv = fw/rv, #to detect problematic samples
+         mean_fract_home = mean(c_across(cols = c(fw,rv)), na.rm = T), #(fw+rv)/2,
+         mean_fract_hopped = 1-mean_fract_home,) %>%
+  filter(!grepl("E2143", sample_base)) %>% #filter out E2143 & E2866
+  #filter(!grepl("E2866", sample_base)) %>% 
+  ungroup()
+
+
+hopping_eff_tib_wide_grouped = hopping_eff_tib_wide %>%
+  mutate(sample_group = case_when(sample_base %in% paste0("E2288_MVP", 1:5) ~ "E2288_MVP_C1",
+                                  sample_base %in% paste0("E2288_MVP", 6:10) ~ "E2288_MVP_C6",
+                                  sample_base %in% paste0("E2048_NanogS08_P", 31:39) ~ "E2048_NanogS08",
+                                  sample_base %in% paste0("E2048_NanogS10_P", 1:51) ~ "E2048_NanogS10",
+                                  grepl("E2226|E2285|E2292", sample_base) ~ str_remove(sample_base, "_[0-9]*$"),
+                                  .default = sample_base)) %>%
+  group_by(launch_pad, sample_group) %>%
+  mutate(launch_pad = case_when(grepl("Fzd5", sample_base) ~ "Fzd5", 
+                                grepl("Tdgf1", sample_base) ~ "Tdgf1",
+                                .default = launch_pad)) %>%
+  summarize(mean_fw = mean(fw),
+            mean_rv = mean(rv),
+            mean_fract_home  = mean(mean_fract_home),
+            mean_fract_hopped  = mean(mean_fract_hopped ))
+
+
+# write_tsv(hopping_eff_tib_wide_grouped, "CM20250819_summary_hopping_efficiency.tsv")
+```
+
+## annotate dataframe
+Infos to constructs:
+CM002 and CM003 have a short PA signal (snRP1)
+CM008 has SV40 polyA signal, wrong orientation (same as Sox2 constructs)
+CM010 has short polyA signal (snRP1)
+
+pCM002 is short Nanog promoter
+pCM003 is long Nanog promoter
+pCM008 is short Nanog promoter
+pCM010 is short Nanog promoter
+
+pCM002, pCM008, pCM010 have the same short Nanog promoter sequence
+```{r}
+# In the pipeline, the nested PB-SB pLD037 inserts are given the same launch pad position, called N1 in this case. This is because they all have the same sequence because they are not reaching the genome, therefore we have to assign the right LP here. 
+
+
+samples_annotated = hopping_eff_tib_wide %>%
+  mutate(sample_group = case_when(sample_base %in% paste0("E2288_MVP", 1:5) ~ "E2288_MVP_C1",
+                                  sample_base %in% paste0("E2288_MVP", 6:10) ~ "E2288_MVP_C6",
+                                  sample_base %in% paste0("E2048_NanogS08_P", 31:39) ~ "E2048_NanogS08",
+                                  sample_base %in% paste0("E2048_NanogS10_P", 1:51) ~ "E2048_NanogS10",
+                                  grepl("E2226|E2285|E2292|E2143", sample_base) ~ str_remove(sample_base, "_[0-9]*$"),
+                                  .default = sample_base)) %>%
+  select(sample_base, sample_group, launch_pad) %>%
+  mutate(experiment = str_remove(sample_base, "_.*$"),
+         insert = case_when(experiment == "E1177" ~ "pJOYC037",
+                            experiment %in% c('E1682', 'E1792') ~ 'pLD037',
+                            experiment == "E1665" ~  "pME013", #cell line CBS16 = pME013
+                            grepl("NanogS08", sample_base) ~ "pCM008",
+                            grepl("NanogS10", sample_base) ~ "pCM010",
+                            experiment == "E2288" ~ "pMV001",
+                            experiment == "E2143" ~ NA, #check, I think this is actually a mix of pCM008 and pCM010, so cannot really analyse
+                            grepl("16A", sample_base) ~ "pME016",
+                            grepl("CBS16", sample_base) ~ "pME013",
+                            grepl("_34", sample_base) ~ "pME034",
+                            grepl("_41", sample_base) ~ "pME041",
+                            grepl("3xCTCF", sample_base) ~  "pME038",
+                            grepl("CRE6", sample_base) ~ "CRE6",
+                            grepl("MK[0]?1", sample_base) ~ "pMK01", #matches MK01 and MK1
+                            grepl("MK[0]?2", sample_base) ~ "pMK02",
+                            grepl("MK[0]?3", sample_base) ~ "pMK03",
+                            grepl("MK[0]?3", sample_base) ~ "pMK03",
+                            experiment == "E2902" ~ "pJOYC037",
+                            grepl("_LoxP", sample_base) ~ "pLD037",
+                            sample_base == "E1845_NanogS" ~ "pCM002",
+                            sample_base == "E1845_NanogS_techrep1" ~ "pCM002",
+                            sample_base == "E1845_NanogL" ~ "pCM003",
+                            sample_base == "E1845_NanogL_techrep1" ~ "pCM003",
+                            grepl("NRF1", sample_base) ~ "TFR_NRF1",
+                            grepl("OCT4SOX2", sample_base) ~ "TFR_Oct4_Sox2",
+                            grepl("P53", sample_base) ~ "TFR_P53",
+                            grepl("E2866_Nanog", sample_base) ~ "pLE001",
+                            grepl("Random2", sample_base) ~ "TFR_neg_ctrl",
+                            grepl("STAT3", sample_base) ~ "TFR_STAT3"),
+         launch_pad = case_when(grepl("Fzd5", sample_base) ~ "Fzd5", 
+                                grepl("Tdgf1", sample_base) ~ "Tdgf1",
+                                .default = launch_pad)
+  )
+
+sample_group_annotated = samples_annotated %>%
+  dplyr::select(-sample_base) %>%
+  distinct()
+
+```
+
+## info on constructs
+```{r}
+all_constructs = readDNAStringSet("/DATA/usr/m.eder/projects/Method_paper/home_loc_read_count/ME20260224_constructs.fasta")
+
+alphabet_count = alphabetFrequency(all_constructs, baseOnly = T) %>%
+  as_tibble() %>%
+  mutate(construct = names(all_constructs)) %>%
+  mutate(GC_freq = (C+G)/(A+C+G+T))
+
+CpG_count = vmatchPattern("CG",all_constructs) %>% lengths()
+
+
+alphabet_freq = alphabetFrequency(all_constructs, baseOnly = T) 
+
+names(all_constructs)
+
+
+all_construct_data = tibble(insert = names(all_constructs), insert_size = width(all_constructs), 
+                            CpG_count = CpG_count, GC_content = alphabet_count$GC_freq,
+                            insert_seq = as.character(all_constructs)) %>%
+  mutate(CpG_fract = CpG_count*2/insert_size) %>%
+  mutate(insert = case_when(insert == "TFR_Random2" ~ "TFR_neg_ctrl",
+                            .default = insert))
+ 
+```
+
+## Combine data and annotate BR
+```{r}
+
+hopping_eff_tib_wide_annot = 
+  hopping_eff_tib_wide_grouped %>%
+  left_join(sample_group_annotated) %>%
+  left_join(all_construct_data)
+
+# Annotate biological or technical replicates (we count the different measurement days from Lise as technical replicates since they come from the same transfections)
+hopping_eff_tib_wide_annot2 =
+hopping_eff_tib_wide_annot %>% 
+  mutate(bio_rep = case_when(launch_pad == "A1" ~ "rep1",
+                             launch_pad == "C10" ~ "rep1",
+                             sample_group == "E2716_23_34A" ~ "rep4",
+                             grepl("E2555_", sample_group) ~ split_string(sample_group, "_", 2),
+                             grepl("E2716_rep1_C9_mCh-_34", sample_group) ~ "rep3",
+                             grepl("E2716_rep2_C9_mCh-_34", sample_group) ~ "rep4",
+                             grepl("E2716_", sample_group) ~ split_string(sample_group, "_", 2),
+                             grepl("E1845_LoxP", sample_group) ~ "rep2",
+                             insert == "pLD037" ~ "rep1",
+                             sample_group == "E2226_CRE6_non_sorted" ~ "rep1",
+                             sample_group == "E2347_CRE6" ~ "rep2",
+                             grepl("E1665_", sample_group) ~ "rep1",
+                             sample_group == "E2226_CBS16_non_sorted" ~ "rep2",
+                             sample_group == "E2226_16A_non_sorted" ~ "rep3", # its actually rep1, but if i combine it to the CBS16 i will assign it as an extra replicate, therefore rep3
+                             sample_group == "E2138_23_34A" ~ "rep1",
+                             sample_group == "E2285_34A_ctrl" ~ "rep3",
+                             sample_group == "E2282_23_34A_DelD2_ctrl" ~ "rep1",
+                             sample_group == "E2282_23_34A_DelE12_ctrl" ~ "rep1",
+                             sample_group == "E2282_23_34A_WT_ctrl" ~ "rep2",
+                             sample_group == "E2347_23_34A_delD2" ~ "rep2",
+                             sample_group == "E2347_23_34A_delE12" ~ "rep2",
+                             sample_group == "E2226_3xCTCF_non_sorted" ~ "rep1",
+                             sample_group == "E2347_3xCTCF" ~ "rep2",
+                             sample_group == "E2285_MK01_ctrl" ~ "rep1",
+                             sample_group == "E2401_23_MK01_ctrl" ~ "rep2",
+                             sample_group == "E2285_MK02_ctrl" ~ "rep1",
+                             sample_group == "E2401_23_MK02_ctrl" ~ "rep2",
+                             sample_group == "E2285_MK03_ctrl" ~ "rep1",
+                             sample_group == "E2401_23_MK03_ctrl" ~ "rep2",
+                             sample_group == "E2866_Nanog1" ~ "rep1",
+                             sample_group == "E2866_Nanog2" ~ "rep1",
+                             experiment == "E2866" ~ "rep2",
+                             launch_pad == "LP8" ~ "rep1",
+                             experiment == "E2048" ~ "rep1",
+                             experiment == "E2288" ~ "rep1",
+                             experiment == "E1177" ~ "rep1", 
+                             
+                             sample_group == "E2902_WT78_1_SB" ~ "rep2",
+                             sample_group == "E2902_WT79_1_SB" ~ "rep2",
+                             sample_group == "E2902_WT83_1_SB" ~ "rep2",
+                             sample_group == "E2902_WT78_2_SB" ~ "rep3",
+                             sample_group == "E2902_WT79_2_SB" ~ "rep3",
+                             sample_group == "E2902_WT83_2_SB" ~ "rep3",
+                             
+                             .default = "rep1")) %>%
+  mutate(launch_pad = factor(launch_pad, levels = c("C9", "LP23", "LP8", "A1", "C10", "Fzd5", "Lise_F108", "N1", "Lise_N31", "Lise_N37", "Tdgf1", "Lise_T3", "Lise_T48", "Lise_T137", "pJOYC037")),
+         genotype = case_when(grepl("elD2", sample_group) ~ "delD2",
+                              grepl("elE12", sample_group) ~ "delE12",
+                              grepl("_mCh-_", sample_group) ~ "mCh_del",
+                              .default = "WT")) %>%
+  mutate(insert_category = case_when(grepl("TFR", insert) ~ "synthetic_promoter",
+                                     insert %in% c("pME034", "pCM002", "pCM003", "pCM008", "pCM010", "pLE001") ~ "promoter",
+                                     insert == "pME041" ~ "gene",
+                                     insert %in% c("pME013", "pME016", "pME038") ~ "CTCF",
+                                     insert %in% c("pMK01", "pMK02", "pMK03") ~ "CTCF+promoter",
+                                     insert %in% c("CRE6") ~ "neutral_2",
+                                     insert %in% c("pLD037", "pJOYC037") ~ "neutral_1",
+                                     insert == "pMV001" ~ "enhancer",
+                                     .default = "other"))
+
+#write_tsv(hopping_eff_tib_wide_annot2, "/home/c.moene/projects/hopping_technology/04_Hopping_eff_insert_activity/hopping_eff_tib_wide_annot2.tsv")
+```
+
+```{r}
+# Color palette for insert category
+insert_category_cols <- c(
+  "promoter" = "#1B9E77",
+  "synthetic_promoter" = "#1F78B4",
+  "gene" = "#D95F02",
+  "CTCF" = "#7570B3",
+  "CTCF+promoter" = "#E7298A",
+  "neutral_1" = "#66A61E",
+  "neutral_2" = "#66A61E",
+  "enhancer" = "#E6AB02",
+  "other" = "grey60"
+)
+
+```
+
+
+# Transposition efficiency based on transposon cargo
+Combine insert pME013 and pME016 together. 
+Also combine pCM02, pCM08, pcM010 and use the mean hopping efficiency and mean size
+I am using the different NanogS as different biological replicates since they have the same NanogS promoter and only differ in their polyA. 
+
+```{r Transposition efficiency for differnt cargo categories}
+insert_cat_levels <- c(
+  "neutral_1", "neutral_2", "CTCF", "promoter", "synthetic_promoter",
+  "CTCF+promoter", "gene", "enhancer", "other"
+)
+
+plot_dat2 =
+hopping_eff_tib_wide_annot2 %>% 
+  select(launch_pad, insert, insert_category, bio_rep, mean_fract_hopped, genotype, experiment) %>% 
+  filter(launch_pad %in% c("LP23", "N1", "C9"),
+         genotype == "WT",
+         experiment != "E2866") %>%
+  mutate(insert_plot = case_when(insert == "pME016" ~ "1xCBS",
+                                 insert %in% c("pCM002", "pCM008", "pCM010") ~ "NanogS",
+                                 insert == "pME034" ~ "Sox2P",
+                                 insert == "pME041" ~ "Sox2P_CDS",
+                                 insert == "CRE6" ~ "neutral_2",
+                                 insert == "pLD037" ~ "neutral_1",
+                                 insert == "pME013" ~ "1xCBS",
+                                 insert == "pME038" ~ "3xCBS",
+                                 insert == "pMK01" ~ "3xCBS_Fw_Sox2P",
+                                 insert == "pMK02" ~ "3xCBS_Rv_Sox2P",
+                                 insert == "pMK03" ~ "1xCBS_Fw_Sox2P",
+                                 insert == "pCM003" ~ "NanogL",
+                                 insert == "pMV001" ~ "Nanog Enhancer",
+                                 .default = insert))  %>%
+  mutate(insert_plot = factor(insert_plot, 
+                              levels = (c("neutral_1", "neutral_2", "1xCBS", "3xCBS", "1xCBS_Fw_Sox2P", "3xCBS_Fw_Sox2P", "3xCBS_Rv_Sox2P", "Sox2P", "Sox2P_CDS", "NanogL", "NanogS", "TFR_neg_ctrl", "TFR_P53", "TFR_STAT3", "TFR_Oct4_Sox2", "TFR_NRF1", "Nanog Enhancer")))) %>% #order them for plotting
+ mutate(bio_rep = case_when(insert == "pCM002" ~ "rep1", #use the different NanogP cargos as different reps
+                             insert == "pCM008" ~ "rep2",
+                             insert == "pCM010" ~ "rep3",
+                             .default = bio_rep)) %>%
+  mutate(insert_category = factor(insert_category, levels = insert_cat_levels)) %>%
+  group_by(launch_pad, insert_plot, bio_rep, insert_category) %>% 
+  summarize(mean_fract_hopped_biorep = mean(mean_fract_hopped), .groups = "drop") %>%
+  mutate(insert_lp = paste(launch_pad, insert_plot, sep = "_"))
+  
+```
+**Conclusion:**
+Here 1xCBS consists of pME013 and pME016 combined. NanogS contains pCM02, pCM08, pcM010, same NanogS promoter but different polyA. Used each one as a separate biologcial replicate. Describe in M&M. 
+
+## Fig 3A  plot
+```{r Fig 3A}
+summary_stats = plot_dat2 %>% 
+  group_by(insert_plot, launch_pad, insert_category) %>%
+  summarise(mean_fract_hopped = mean(mean_fract_hopped_biorep)) %>% ungroup()
+
+pHopEff_LP_inserts_V2 =
+  plot_dat2 %>%
+  ggplot(aes(x = insert_plot, y = mean_fract_hopped_biorep,
+             col = insert_category)) +
+  #geom_jitter(alpha = 0.8, size = 2, width = 0.2) +
+  #geom_jitter(alpha = 0.8, size = 2, width = 0.2, height = 0) +
+  geom_point(position = position_jitter(width = 0.2, height = 0, seed = 1)) +
+  geom_point(data = summary_stats, aes(x = insert_plot, y = mean_fract_hopped), 
+             shape = "-",
+             size = 10,
+             color = "black") +
+  facet_nested(~ launch_pad, scales = "free_x", space = "free_x") +
+  scale_x_discrete(
+    drop = TRUE,
+    labels = function(x) sub(".*__", "", x)
+  ) +
+  scale_y_continuous(limits = c(0, 0.7)) +
+  ggtitle("Transposition efficiency for different inserts",
+          subtitle = "E2866 filtered out") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        legend.position = "bottom") +
+  scale_color_manual(values = insert_category_cols)
+
+pHopEff_LP_inserts_V2
+
+
+# new, use geom_crossbar instead of point with the shape "-", this has some intrinsic bias of positioning
+summary_stats = plot_dat2 %>% 
+  group_by(insert_plot, launch_pad, insert_category) %>%
+  summarise(mean_fract_hopped = mean(mean_fract_hopped_biorep), .groups = "drop")
+
+plot_dat2 %>%
+  ggplot(aes(x = insert_plot, y = mean_fract_hopped_biorep,
+             col = insert_category, shape = launch_pad)) +
+  geom_jitter(alpha = 0.8, size = 2, width = 0.2, height = 0) +
+  geom_crossbar(
+    data = summary_stats,
+    aes(x = insert_plot,
+        y = mean_fract_hopped,
+        ymin = mean_fract_hopped,
+        ymax = mean_fract_hopped),
+    width = 0.5,
+    color = "black",
+    linewidth = 0.3,
+    inherit.aes = FALSE
+  ) +
+  facet_nested(~ launch_pad, scales = "free_x", space = "free_x") +
+  scale_y_continuous(limits = c(0, 0.7)) +
+  ggtitle("Transposition efficiency for different inserts",
+          subtitle = "E2866 filtered out") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        legend.position = "bottom") +
+  scale_color_manual(values = insert_category_cols)
+```
+
+
+## Fig 3B - Insert size of chosen LPs
+Same filtering as before:
+- here we take the mean of the biologcial replicates
+- and we take the mean of the size of the NanogS constructs, the only difference here is the polyA tail, the promoter is the same. Insert size ranges from 1485 to 1671 bp. 
+```{r Fig 3B}
+
+plot_dat3 =
+hopping_eff_tib_wide_annot2 %>% 
+  select(launch_pad, insert, insert_category, bio_rep, mean_fract_hopped, genotype, experiment, insert_size) %>% 
+  filter(launch_pad %in% c("LP23", "N1", "C9"),
+         genotype == "WT",
+         experiment != "E2866") %>%
+  mutate(insert_plot = case_when(insert == "pME016" ~ "1xCBS",
+                                 insert %in% c("pCM002", "pCM008", "pCM010") ~ "NanogS",
+                                 insert == "pME034" ~ "Sox2P",
+                                 insert == "pME041" ~ "Sox2P_CDS",
+                                 insert == "CRE6" ~ "neutral_2",
+                                 insert == "pLD037" ~ "neutral_1",
+                                 insert == "pME013" ~ "1xCBS",
+                                 insert == "pME038" ~ "3xCBS",
+                                 insert == "pMK01" ~ "3xCBS_Fw_Sox2P",
+                                 insert == "pMK02" ~ "3xCBS_Rv_Sox2P",
+                                 insert == "pMK03" ~ "1xCBS_Fw_Sox2P",
+                                 insert == "pCM003" ~ "NanogL",
+                                 insert == "pMV001" ~ "Nanog Enhancer",
+                                 .default = insert))  %>%
+  mutate(insert_plot = factor(insert_plot, 
+                              levels = (c("neutral_1", "neutral_2", "1xCBS", "3xCBS", "1xCBS_Fw_Sox2P", "3xCBS_Fw_Sox2P", "3xCBS_Rv_Sox2P", "Sox2P", "Sox2P_CDS", "NanogL", "NanogS", "TFR_neg_ctrl", "TFR_P53", "TFR_STAT3", "TFR_Oct4_Sox2", "TFR_NRF1", "Nanog Enhancer")))) %>% #order them for plotting
+ mutate(bio_rep = case_when(insert == "pCM002" ~ "rep1", #use the different NanogP cargos as different reps
+                             insert == "pCM008" ~ "rep2",
+                             insert == "pCM010" ~ "rep3",
+                             .default = bio_rep)) %>%
+  mutate(insert_category = factor(insert_category, levels = insert_cat_levels)) %>%
+  group_by(launch_pad, insert_plot, bio_rep, insert_category, insert_size) %>%
+  summarize(mean_fract_hopped_biorep = mean(mean_fract_hopped), .groups = "drop") %>% #calculate mean per bio_rep from tech_reps
+  group_by(launch_pad, insert_plot, insert_category) %>% # combine per insert construct
+  summarize(mean_fract_hopped = mean(mean_fract_hopped_biorep),
+            mean_insert_size = mean(insert_size),
+            .groups = "drop") %>%
+  mutate(insert_lp = paste(launch_pad, insert_plot, sep = "_"))
+
+
+ggplot(plot_dat3, 
+       aes(x = mean_insert_size, y = mean_fract_hopped, color = insert_category, shape = launch_pad)) +
+  geom_point(size = 2.5, alpha = 0.7) +
+  geom_smooth(
+    aes(group = 1),
+    method = "lm",
+    se = FALSE,
+    linetype = "dashed",
+    color = "black") +
+  stat_cor(
+    data = plot_dat3,
+    aes(x = mean_insert_size, y = mean_fract_hopped),
+    method = "spearman",
+    inherit.aes = FALSE) +
+  scale_x_continuous(limits = c(0, NA)) +
+  scale_y_continuous(limits = c(0, 0.7)) +
+  ggtitle("Hopping efficiency vs insert size", subtitle = "N1, LP23, C9 LPs, Spearman corr.") +
+  theme_bw() +
+  scale_color_manual(values = insert_category_cols) +
+  theme(legend.position = "bottom")
+
+```
+
+
+# Corrlate hopping efficiency with expression
+Here we use TF-reporters that he measured by FACS. 
+
+## Load FACS data
+```{r}
+
+#Load FCS files
+fcs_files_E2820_TF_rep = dir("/home/c.moene/projects/hopping_technology/04_Hopping_eff_insert_activity/FACS_files/E2820_TF_reporters", full.names = T)
+names(fcs_files_E2820_TF_rep) = str_remove(str_remove(str_remove(fcs_files_E2820_TF_rep, '.*/'), "_Single Cells.fcs"), "export_cell_lines_")
+
+
+annotation_file_E2820 = tibble(filenames = names(fcs_files_E2820_TF_rep),
+                               full_filename = fcs_files_E2820_TF_rep,
+                               insert = case_when(grepl("L05", filenames) ~ "STAT3",
+                                                  grepl("L06", filenames) ~ "TP53",
+                                                  grepl("L07", filenames) ~ "OCT4_SOX2",
+                                                  grepl("L08", filenames) ~ "NFYA",
+                                                  grepl("L09", filenames) ~ "random2",
+                                                  grepl("L10", filenames) ~ "random1",
+                                                  grepl("L11", filenames) ~ "NRF1",
+                                                  grepl("Nanog", filenames) ~ "Nanog promoter",
+                                                  .default = "WT"),
+                               clone_tmp = split_string(filenames, "_", 3),
+                               clone = case_when(clone_tmp == "NA" ~ "1",
+                                                 .default = clone_tmp)) %>%
+  select(-clone_tmp)
+
+
+# Load FCS files
+flowset_E2820 = flowCore::read.flowSet(files = annotation_file_E2820$full_filename, alter.names = T, truncate_max_range = F, ignore.text.offset = T)
+
+#make dataframe
+annotation_file_E2820 = data.frame(annotation_file_E2820)
+rownames(annotation_file_E2820) = annotation_file_E2820$filenames
+
+flowCore::sampleNames(flowset_E2820) = annotation_file_E2820$filenames
+flowCore::pData(flowset_E2820) = annotation_file_E2820
+
+flowset_fluo_E2820 = flowset_E2820[,c('BL.B..530_30.A', 'YG.D..610_20.A')]
+colnames(flowset_fluo_E2820) = c("GFP", "mCherry")
+
+```
+
+```{r}
+total_cell_count_tmp = flowCore::keyword(flowset_fluo_E2820, "$TOT")[,'$TOT']
+total_cell_count = as.numeric(total_cell_count_tmp)
+names(total_cell_count) = names(total_cell_count_tmp)
+
+
+median_mCherry = sapply(1:length(flowset_fluo_E2820), function(i){
+  median(flowCore::exprs(flowset_fluo_E2820[[i]])[,'mCherry'])
+})
+names(median_mCherry) = sampleNames(flowset_fluo_E2820)
+
+
+median_GFP = sapply(1:length(flowset_fluo_E2820), function(i){
+  median(flowCore::exprs(flowset_fluo_E2820[[i]])[,'GFP'])
+})
+names(median_GFP) = sampleNames(flowset_fluo_E2820)
+
+flowCore::pData(flowset_fluo_E2820)$median_mCherry = median_mCherry
+flowCore::pData(flowset_fluo_E2820)$median_GFP = median_GFP
+
+flowCore::pData(flowset_fluo_E2820)$total_cell_count = total_cell_count
+
+fcs_tib = tibble(flowCore::pData(flowset_fluo_E2820))
+```
+
+
+## Normalize expression
+```{r}
+
+#subtract autofluorescence, normalize to GFP
+autofluo_tib_comb = fcs_tib  %>%
+  filter(name == "WT") %>%
+  summarize(mCherry_WT = mean(median_mCherry),
+            GFP_WT = mean(median_GFP) )
+
+mCherry_WT <- autofluo_tib_comb$mCherry_WT
+GFP_WT     <- autofluo_tib_comb$GFP_WT
+
+expression_tib_comb = fcs_tib %>%
+  mutate(median_mCherry_cor = median_mCherry - mCherry_WT,
+         median_GFP_cor     = median_GFP - GFP_WT,
+         GFP_norm           = median_GFP_cor / median_mCherry_cor)
+
+
+#normalize to random 2 control (the mean of both replicates)
+standard_tib = expression_tib_comb %>%
+  filter(insert == "random2") %>%
+  summarize(mCherry_standard = mean(median_mCherry_cor),
+            GFP_standard = mean(median_GFP_cor) )
+
+mCherry_standard <- standard_tib$mCherry_standard
+GFP_standard <- standard_tib$GFP_standard
+
+expression_tib_comb = expression_tib_comb %>%
+  mutate(rel_mCherry_cor = median_mCherry_cor / mCherry_standard,
+         rel_GFP_cor = median_GFP_cor / GFP_standard)
+```
+
+## Add hopping efficiency to it
+```{r}
+
+# Filter for E2828 & E2866
+tib_mean_hop_fract = hopping_eff_tib_wide_annot2 %>% filter(experiment %in% c("E2828", "E2866")) %>% group_by(insert) %>% summarize(mean_hop = mean(mean_fract_hopped)) %>% select(insert, mean_hop) %>% 
+  mutate(insert = case_when(insert == "TFR_NRF1" ~ "NRF1",
+                            insert == "TFR_Nanog" ~ "Nanog promoter",
+                            insert == "TFR_Oct4_Sox2" ~ "OCT4_SOX2",
+                            insert == "TFR_P53" ~ "TP53",
+                            insert == "TFR_Random2" ~ "random2",
+                            insert == "TFR_STAT3" ~ "STAT3",
+                            .default = insert
+                            ))
+
+tib_expr_TF = expression_tib_comb %>% select(insert, clone, median_mCherry_cor, rel_GFP_cor, median_GFP_cor, median_GFP)
+
+
+tib_comb = tib_expr_TF %>% left_join(tib_mean_hop_fract, join_by(insert))
+
+tib_comb %>%
+  ggplot(aes(x = rel_GFP_cor, y = mean_hop, colour = insert)) +
+  geom_point(size = 2) +
+  theme_bw()
+
+tib_comb %>%
+  group_by(insert) %>% summarize (mean_rel_GFP = mean(rel_GFP_cor),
+                                  mean_hop = mean(mean_hop)) %>%
+  drop_na() %>%
+  ggplot(aes(x = mean_rel_GFP, y = mean_hop, colour = insert)) +
+  geom_point(size = 3) +
+  theme_bw()
+
+# saveRDS(tib_expr_TF, '/home/c.moene/projects/hopping_technology/04_Hopping_eff_insert_activity/files/CM20260415_fluorescence_TF_reporters.rds')
+```
+**Conclusion:**
+The nanog promoter has a different size than the rest and E2866 has the issue that the hopping efficiency is calculated after they have been sorted for GFP negative cells, possibly introducing some bias. 
+
+To-do: Only use the data E2828 and without Nanog. 
+
+random2 has higher GFP values than WT. 
+
+## Color scheme for TFR
+```{r}
+
+promoter_cols <- c(
+  "NRF1" = "#36B885",
+  "OCT4_SOX2" = "#34BFC6",
+  "STAT3" = "#37449C",
+  "TP53" = "#2179B4",
+  "random2" = "#676767"
+)
+```
+
+## Plot - hop effic vs activity
+```{r}
+# Select hopping efficiency of E2828
+tib_hop_eff_E2828 = 
+hopping_eff_tib_wide_annot2 %>% filter(experiment %in% c("E2828")) %>% 
+  mutate(insert = case_when(insert == "TFR_NRF1" ~ "NRF1",
+                            insert == "TFR_Oct4_Sox2" ~ "OCT4_SOX2",
+                            insert == "TFR_P53" ~ "TP53",
+                            insert == "TFR_neg_ctrl" ~ "random2",
+                            insert == "TFR_STAT3" ~ "STAT3",
+                            .default = insert))
+```
+
+## Fig 3E
+```{r Fig 3E}
+#Plot only clone1, which has been used to hop
+## Normalize to random2 of clone 1
+
+standard_tib = expression_tib_comb %>%
+  filter(insert == "random2" & clone == "1") %>%
+  summarize(mCherry_standard_cl1 = mean(median_mCherry_cor),
+            GFP_standard_cl1 = mean(median_GFP_cor) )
+
+mCherry_standard_cl1 <- standard_tib$mCherry_standard_cl1
+GFP_standard_cl1 <- standard_tib$GFP_standard_cl1
+
+expression_tib_comb = expression_tib_comb %>%
+  mutate(rel_mCherry_cor = median_mCherry_cor / mCherry_standard_cl1,
+         rel_GFP_cor = median_GFP_cor / GFP_standard_cl1)
+
+tib_expr_TF = expression_tib_comb %>% select(insert, clone, median_mCherry_cor, rel_GFP_cor, median_GFP_cor, median_GFP)
+
+tib_comb_3 = tib_expr_TF %>% 
+  left_join(tib_hop_eff_E2828, join_by(insert)) %>% drop_na()
+
+tib_comb_3 %>%
+  filter(clone == "1") %>%
+  ggplot(aes(x = rel_GFP_cor, y = mean_fract_hopped)) +
+  geom_point(size = 3, col = "black") +
+  geom_smooth(method = "lm",
+              se = FALSE,
+              linetype = "dashed",
+              color = "black") +
+  stat_cor(method = "spearman",
+           inherit.aes = TRUE) +
+  scale_x_continuous(limits = c(0, NA)) +
+  scale_y_continuous(limits = c(0, 1)) +
+  ggtitle("Hop efficiency based on activity", subtitle = "clone 1, norm. to mean of TFR_neg_ctrl") +
+  theme_bw()
+
+
+#color by insert
+tib_comb_3 %>%
+  filter(clone == "1") %>%
+  ggplot(aes(x = rel_GFP_cor, y = mean_fract_hopped, col = insert)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm",
+              se = FALSE,
+              linetype = "dashed",
+              color = "black") +
+  stat_cor(aes(x = rel_GFP_cor, y = mean_fract_hopped),
+           method = "spearman",
+           inherit.aes = FALSE) +
+  scale_x_continuous(limits = c(0, NA)) +
+  scale_y_continuous(limits = c(0, 0.7)) +
+  ggtitle("Hop efficiency based on activity", subtitle = "clone 1, norm. to mean of TFR_neg_ctrl") +
+  theme_bw()
+
+
+# text label points
+tib_comb_3 %>%
+  filter(clone == "1") %>%
+  ggplot(aes(x = rel_GFP_cor, y = mean_fract_hopped, col = insert)) +
+  geom_point(size = 3) +
+  geom_text_repel(aes(label = insert),
+                  show.legend = FALSE,
+                  size = 3.5) +
+  geom_smooth(method = "lm",
+              se = FALSE,
+              linetype = "dashed",
+              color = "black") +
+  stat_cor(aes(x = rel_GFP_cor, y = mean_fract_hopped),
+           method = "spearman",
+           inherit.aes = FALSE) +
+  scale_x_continuous(limits = c(0, NA)) +
+  scale_y_continuous(limits = c(0, 0.7)) +
+  ggtitle("Hop efficiency based on activity", subtitle = "clone 1, norm. to mean of TFR_neg_ctrl") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  scale_color_manual(values = promoter_cols)
+```
+
+## Fig 3D - Plot - density of fluorescence
+```{r Fig 3D}
+# extract single-cell GFP values from each file
+dens_tib_E2820 <- map_dfr(seq_along(flowset_fluo_E2820), function(i) {
+  tibble(
+    GFP = flowCore::exprs(flowset_fluo_E2820[[i]])[, "GFP"],
+    filename = flowCore::sampleNames(flowset_fluo_E2820)[i]
+  )
+}) %>%
+  left_join(
+    fcs_tib %>% select(filenames, insert, clone),
+    by = c("filename" = "filenames")
+  ) 
+
+
+# density plot
+pDensity_E2820 = 
+ggplot(dens_tib_E2820, aes(x = GFP, colour = insert)) +
+  geom_density(alpha = 0.3, linewidth = 1) +
+  scale_x_continuous(trans = "log10", limits = c(50, 1e5)) +
+  theme_bw() +
+  labs(
+    title = "Single-cell GFP distributions",
+    subtitle = "log10 x-scale",
+    x = "GFP intensity (BL1.A)",
+    y = "Density") +
+  theme(legend.position="bottom")
+
+pDensity_E2820
+
+
+#Assign colors to the inserts
+insert_cols_E2820 <- c(
+  "WT" = "black",
+  "random1" = "#676767",
+  "random2" = "#676767",
+  "STAT3" = "#37449C",
+  "TP53" = "#2179B4",
+  "OCT4_SOX2" = "#34BFC6",
+  "NFYA" = "#E7298A",
+  "NRF1" = "#36B885",
+  "Nanog promoter" = "#E6AB02"
+)
+
+
+# Plot replicate clones together
+pDensity_E2820 = 
+ggplot(dens_tib_E2820, aes(x = GFP, colour = insert)) +
+  geom_density(alpha = 0.3, linewidth = 1) +
+  scale_colour_manual(values = insert_cols_E2820) +
+  scale_x_continuous(trans = "log10", limits = c(50, 1e5)) +
+  theme_bw() +
+  labs(
+    title = "TF reporter expression",
+    subtitle = "both clones combined",
+    x = "GFP intensity (BL1.A)",
+    y = "Density"
+  ) +
+  theme(legend.position = "bottom")
+
+pDensity_E2820
+
+
+# by replicate
+pDensity_E2820_rep = 
+ggplot(dens_tib_E2820, aes(x = GFP, colour = insert)) +
+  geom_density(alpha = 0.3, linewidth = 1) +
+  scale_colour_manual(values = insert_cols_E2820) +
+  scale_x_continuous(trans = "log10", limits = c(50, 1e5)) +
+  facet_wrap(~ clone) +
+  theme_bw() +
+  labs(
+    title = "TF reporter expression",
+    subtitle = "both clones combined",
+    x = "GFP intensity (BL1.A)",
+    y = "Density"
+  ) +
+  theme(legend.position = "bottom")
+
+pDensity_E2820_rep
+
+
+# Plot clone 1
+pDensity_E2820_clone1 = 
+  dens_tib_E2820 %>% filter(clone == "1" & insert %in% c("WT", "random2", "TP53", "STAT3", "OCT4_SOX2", "NRF1")) %>%
+  mutate(insert = factor(insert, levels = c("WT", "random2", "TP53", "STAT3", "OCT4_SOX2", "NRF1"))) %>%
+  ggplot(aes(x = GFP, colour = insert)) +
+  geom_density(alpha = 0.3, linewidth = 1) +
+  scale_colour_manual(values = insert_cols_E2820) +
+  scale_x_continuous(trans = "log10", limits = c(50, 1e5)) +
+  theme_bw() +
+  labs(
+    title = "TF reporter expression",
+    subtitle = "both clones combined",
+    x = "GFP intensity (BL1.A)",
+    y = "Density"
+  ) +
+  theme(legend.position = "right")
+
+pDensity_E2820_clone1
+```
+**Conclusion:**
+There is a negative correlation between activity and hopping, the more active, the less good the transposon hops. 
+I am inclined to take the mean of both clones because of TP53. If you take the mean of both clones its slightly higher than the random control, if you select clone one its lower than the random2 control. 
+
+
+# Fig S4B - Deletion delD and delE
+Besides the TF reporters we have additional conditions that we can compare. 
+Sox2P in LP-116kb in WT, DelD, DelE
+Sox2P in LP-116kb in WT, mCh_Deletion
+Sox2P in LP-161kb in WT, mCh_Deletion
+
+Nanog long vs short promoter (same activity, different length)
+
+
+## Load DelD and DelE FACS data
+E2270 - Hopping of DelD and DelE from LP-116kb. Replicate 1
+E2339 - Hopping of DelD and DelE from LP-116kb. Replicate 2
+
+### Load E2270
+```{r load_E2270}
+fcs_files_E2270 = dir('/DATA/projects/CTCF_Sox2/FACS_files/export_fcs_R_E2270_DelD_DelE', 
+                      full.names = T)
+
+fcs_files_E2270_tib = tibble(file = fcs_files_E2270) %>%
+  mutate(sample_name_tmp = split_string(str_remove(file, '.*/'), "_", 4, 10)) %>%
+  mutate(cell_line = case_when(grepl("E12", sample_name_tmp) ~ "23_34_E12",
+                               grepl("D2", sample_name_tmp) ~ "23_34_D2",
+                               grepl("23_34A", sample_name_tmp) ~ "23_34A",
+                               grepl("sort_neg_ctrl", sample_name_tmp) ~ "WT"),
+         
+         treatment = case_when(grepl("UT", sample_name_tmp) ~ "untreated",
+                               grepl("PB", sample_name_tmp) ~ "PB",
+                               grepl("SB", sample_name_tmp) ~ "SB",
+                               grepl("sort_neg_ctrl", sample_name_tmp) ~ "untreated"),
+         
+         genotype = case_when(cell_line == "23_34A" ~ "WT",
+                              cell_line == "23_34_D2" ~ "delD",
+                              cell_line == "23_34_E12" ~ "delE",
+                              .default = "WT"), #very little cells were measured in WT control, check if usable
+         
+         clone_name = case_when(grepl("D2", cell_line) ~ "clone_D2",
+                                grepl("E12", cell_line) ~ "clone_E12",
+                                grepl("23_34A", cell_line) ~ "23_34A",
+                                .default = genotype),
+         replicate = "rep1",
+         fcs_filter = "mCh+",
+         timepoint = "sort",
+         experiment = "E2270",
+         flowcytometer = "sorter",
+         sample_name = paste0(experiment, "_", cell_line, "_", genotype, "_", treatment),
+         date = "me20230523")
+
+```
+
+### Load E2339
+```{r load_E2339}
+
+fcs_files_E2339= dir("/DATA/projects/CTCF_Sox2/FACS_files/export_fcs_R_E2339_DelD_DelE", 
+                      full.names = T)
+
+fcs_files_E2339_tib = tibble(file = fcs_files_E2339) %>%
+  mutate(sample_name_tmp = split_string(str_remove(file, '.*/'), "_", 2, 8)) %>%
+  mutate(cell_line = case_when(grepl("23_34A_ctrl", sample_name_tmp) ~ "23_34A",
+                               grepl("23_DelD", sample_name_tmp) ~ "23_34_D2",
+                               grepl("23_DelE", sample_name_tmp) ~ "23_34_E12",
+                               grepl("F121_ctrl", sample_name_tmp) ~ "F121",
+                               grepl("WT", sample_name_tmp) ~ "WT"),
+         
+          treatment = case_when(grepl("UT", sample_name_tmp) ~ "untreated",
+                               grepl("PB", sample_name_tmp) ~ "PB",
+                               grepl("SB", sample_name_tmp) ~ "SB",
+                               grepl("ctrl", sample_name_tmp) ~ "untreated",
+                               grepl("WT", sample_name_tmp) ~ "untreated"),
+         
+         genotype = case_when(cell_line == "23_34A" ~ "WT",
+                              cell_line == "23_34_D2" ~ "delD",
+                              cell_line == "23_34_E12" ~ "delE",
+                              .default = "WT"),
+         
+         clone_name = case_when(grepl("23_DelD", sample_name_tmp) ~ "clone_D2",
+                                grepl("23_DelE", sample_name_tmp) ~ "clone_E12",
+                                .default = cell_line),
+         replicate = "rep2",
+         fcs_filter = "mCh+",
+         timepoint = "sort",
+         experiment = "E2339",
+         flowcytometer = "sorter",
+         sample_name = paste0(experiment, "_", cell_line, "_", genotype, "_", treatment),
+         date = "me20231024"
+         )
+```
+
+
+## Combine data
+```{r}
+fcs_files_combined = bind_rows(fcs_files_E2270_tib,
+                 fcs_files_E2339_tib) %>%
+  mutate(cell_line = factor(cell_line, c("23_34A", "23_34_D2",  "23_34_E12", "F121", "WT"))) %>%
+  mutate(treatment = factor(treatment, c('untreated','PB','SB')))
+
+
+#not all channels are in all datasets, subset the ones we need (which are in all sets) so we can load all at once
+flowset_all = read.flowSet(files = fcs_files_combined$file, alter.names = T, truncate_max_range = F, column.pattern = 'BL.B..530_30.A|YG.D..610_20.A|V.F..450_50.A|FSC.A|SSC.A')
+```
+
+```{r}
+#add sample names and phenodata
+sampleNames(flowset_all) = fcs_files_combined$sample_name
+pData(flowset_all)$name = fcs_files_combined$sample_name
+pData(flowset_all)$sample_name = fcs_files_combined$sample_name
+
+pheno_data_tib = left_join(pData(flowset_all), fcs_files_combined, join_by(sample_name == sample_name) ) 
+rownames(pheno_data_tib) = fcs_files_combined$sample_name
+
+pData(flowset_all) = pheno_data_tib
+
+#order the fluorophores and rename them
+flowset_fluo = flowset_all[,c('BL.B..530_30.A', 'YG.D..610_20.A', 'V.F..450_50.A', 'FSC.A', 'SSC.A')]
+colnames(flowset_fluo) = c("GFP", "mCherry", "mTurq", 'FSC', 'SSC')
+
+N_cells = sapply(1:length(flowset_fluo), function(i){nrow(flowset_fluo[[i]])})
+pData(flowset_fluo)$N_cells = N_cells
+fcs_files_combined$N_cells = N_cells
+
+
+rm(flowset_all)
+```
+
+## Statistics 
+```{r}
+# Calculate median expression
+tib_median = as_tibble(rownames = "name", fsApply(flowset_fluo, each_col, median)) %>%
+  dplyr::rename(median_GFP = GFP,
+         median_mCh = mCherry,
+         median_mTurq = mTurq) %>%
+  select(-c("FSC", "SSC"))
+
+# Calculate mean expression
+tib_mean = as_tibble(rownames = "name", fsApply(flowset_fluo, each_col, mean)) %>%
+  dplyr::rename(mean_mCh = mCherry,
+         mean_GFP = GFP,
+         mean_mTurq = mTurq) %>%
+  select(-c("FSC", "SSC"))
+
+# Calculate standard deviation
+tib_std = as_tibble(rownames = "name", fsApply(flowset_fluo, each_col, sd)) %>%
+  dplyr::rename(std_mCh = mCherry,
+         std_GFP = GFP,
+         std_mTurq = mTurq) %>%
+  select(-c("FSC", "SSC"))
+  
+tib_mean_median_std = tib_median %>% 
+  left_join(tib_mean, by = "name") %>%
+  left_join(tib_std, by = "name") %>%
+  mutate(CV_mCh = std_mCh/mean_mCh, 
+         CV_GFP = std_GFP/mean_GFP,
+         CV_mTurq = std_mTurq/mean_mTurq)
+
+tib_all = pheno_data_tib %>% left_join(tib_mean_median_std, by = "name")
+
+#To add cell number
+tib_all = tib_all %>% left_join(fcs_files_combined)
+```
+
+## Correct and normalize medians
+```{r}
+#subtract autofluorescence
+autofluo_tib_comb = tib_all  %>%
+  filter(cell_line == "WT") %>% #WT rep1 has low amount of cells recorded
+  group_by(date) %>%
+  summarize(mTurq_WT = mean(median_mTurq),
+           mCherry_WT = mean(median_mCh),
+            GFP_WT = mean(median_GFP) )
+
+#normalize to GFP
+expression_tib_comb = tib_all %>%
+  left_join(autofluo_tib_comb, join_by(date)) %>%
+  mutate(median_mTurq_cor = median_mTurq - mTurq_WT,
+         median_mCherry_cor = median_mCh - mCherry_WT,
+         median_GFP_cor = median_GFP - GFP_WT) %>%
+  mutate(mTurq_norm = median_mTurq_cor / median_GFP_cor,
+         mCherry_norm = median_mCherry_cor / median_GFP_cor)
+
+#normalize to 23_34A (to compare between measurement days and to compare them in general)
+standard_tib = expression_tib_comb %>%
+  group_by(date, experiment) %>%
+  filter(cell_line == "23_34A" & treatment == "untreated") %>%
+  summarize(mTurq_norm_standard = mean(mTurq_norm),
+            mCherry_norm_standard = mean(mCherry_norm),
+            GFP_standard = mean(median_GFP_cor))
+
+expression_tib_comb = expression_tib_comb %>%
+  left_join(standard_tib, join_by(date, experiment)) %>%
+  mutate(rel_mTurq = mTurq_norm / mTurq_norm_standard,
+         rel_mCherry = mCherry_norm / mCherry_norm_standard,
+         rel_GFP_cor = median_GFP_cor / GFP_standard)
+```
+
+## Correlate hopping efficiency with activity
+E2270 (hopping) and E2282 (mapping) are the exp for rep1
+E2239 (hopping) and E2347 (mapping) are the exp for rep2
+```{r}
+
+# hopping efficiency
+tib_hop_eff_delD_delE = hopping_eff_tib_wide_annot2 %>% 
+  filter(experiment %in% c("E2282", "E2347") & insert == "pME034") %>%
+  mutate(cell_line = case_when(genotype == "delD2" ~ "23_34_D2",
+                               genotype == "delE12" ~ "23_34_E12",
+                               genotype == "WT" ~ "23_34A",
+                               .default = genotype)) %>%
+  dplyr::rename(replicate = bio_rep) %>%
+  select(mean_fract_hopped, mean_fract_home, cell_line, replicate, insert, insert_size, GC_content)
+
+tib_try = expression_tib_comb %>% left_join(tib_hop_eff_delD_delE, join_by(cell_line, replicate))
+```
+
+### Fig S4B Final paper plot
+We have hopping from two biological replicates and one FACS measurment per clone. 
+```{r Fig S4B}
+# Hopping efficiency of each individual replicate
+tib_hop_eff_delD_delE_allRep = 
+hopping_eff_tib_wide_annot2 %>% 
+  filter(insert == "pME034" & launch_pad == "LP23") %>%
+  mutate(cell_line = case_when(genotype == "WT" ~ "23_34A",
+                               genotype == "delD2" ~ "23_34_D2",
+                               genotype == "delE12" ~ "23_34_E12"))
+
+# rel_mTurq level of rep2
+tib_rel_mTurq_rep2 =  expression_tib_comb %>% 
+  filter(treatment == "untreated" & replicate == "rep2") %>% 
+  select(cell_line, rel_mTurq, mTurq_norm)
+
+# mean of hopping efficiency
+tib_summary = tib_hop_eff_delD_delE_allRep %>% 
+  group_by(genotype) %>%
+  summarise(mean_fract_hopped = mean(mean_fract_hopped)) %>% 
+  mutate(cell_line = case_when(genotype == "WT" ~ "23_34A",
+                               genotype == "delD2" ~ "23_34_D2",
+                               genotype == "delE12" ~ "23_34_E12"))
+
+tib_summary_V2 = tib_summary %>% left_join(tib_rel_mTurq_rep2, join_by(cell_line))
+
+
+#combine to one tibble for plotting
+tib_comb_DelD_DelE = tib_hop_eff_delD_delE_allRep %>% 
+  left_join(tib_rel_mTurq_rep2, join_by(cell_line))
+
+# Plot
+pDelD_DelE_cor_rep2 = 
+tib_comb_DelD_DelE %>%
+  ggplot(aes(x = rel_mTurq, y = mean_fract_hopped, col = cell_line)) +
+  geom_point(alpha = 0.8, size = 2.5) +
+  geom_crossbar(
+    data = tib_summary_V2,
+      aes(x = rel_mTurq, y = mean_fract_hopped, ymin = mean_fract_hopped, ymax = mean_fract_hopped, col = cell_line),
+    inherit.aes = FALSE,
+    width = 0.1,
+    alpha = 0.5) +
+  scale_x_continuous(limits = c(0, NA)) +
+  scale_y_continuous(limits = c(0, NA)) +
+  ggtitle("Hop eff. of Sox2P in LP23 for diff. genomic background", subtitle = "rel mTurq expression based on rep2") +
+  theme_bw()
+
+pDelD_DelE_cor_rep2
+```
+
+###Density plot
+```{r}
+# extract single-cell GFP values from each file
+dens_tib_delD_delE <- map_dfr(seq_along(flowset_fluo), function(i) {
+  tibble(
+    GFP = flowCore::exprs(flowset_fluo[[i]])[, "GFP"],
+    mTurq = flowCore::exprs(flowset_fluo[[i]])[, "mTurq"],
+    mCherry = flowCore::exprs(flowset_fluo[[i]])[, "mCherry"],
+    filename = flowCore::sampleNames(flowset_fluo)[i]
+  )
+}) %>%
+  left_join(
+    fcs_files_combined %>% select(sample_name, cell_line, genotype, treatment, experiment),
+    by = c("filename" = "sample_name")
+  )
+
+# density plot for E2339 with WT control
+pDensity_DelD_DelE_rep2 = 
+dens_tib_delD_delE %>% filter(treatment == "untreated" & experiment == "E2339" & cell_line %in% c("23_34A", "23_34_D2", "23_34_E12", "WT")) %>%
+ggplot(aes(x = mTurq, colour = cell_line, fill = cell_line)) +
+  geom_density(alpha = 0.2, linewidth = 1) +
+  scale_x_continuous(trans = "log10", limits = c(10, NA)) +
+  theme_bw() +
+  theme(legend.position="right") +
+  labs(
+    title = "mTurq expression Rep2 E2339",
+    subtitle = "log10 x-scale",
+    x = "mTurq intensity",
+    y = "Density")
+
+pDensity_DelD_DelE_rep2
+```
+
+```{r}
+plot_grid(pDensity_DelD_DelE_rep2, pDelD_DelE_cor_rep2, ncol = 1, align = "hv", axis = "lr")
+```
+
+
+
+# Fig S4C - C9 deletion
+E2534/E2555: Rep1 and Rep2 of C9 Sox2P and Sox2P-CDS WT & mChDel hopping
+FACS rep1 = 01/05/2024
+FACS rep2 = 02/05/2024
+
+## Inspect hopping efficiency
+```{r}
+hopping_eff_tib_wide_annot2 %>% filter(experiment %in% c("E2555", "E2716") & launch_pad == "C9") %>% 
+  ggplot(aes(x = genotype, y = mean_fract_hopped, col = insert, shape = bio_rep)) +
+  geom_point(size = 3) +
+  theme_bw()
+```
+Both constructs hop better in WT condition which reflects lower reporter activity. 
+
+## Load FACS data
+### Load FACS files from rep1
+```{r}
+#Load FCS files
+fcs_files_E2555_rep1 = dir("/home/c.moene/projects/hopping_technology/04_Hopping_eff_insert_activity/FACS_files/E2534_E2555/rep1/renamed_by_tube", full.names = T)
+names(fcs_files_E2555_rep1) = str_remove(str_remove(fcs_files_E2555_rep1, '.*/'), ".fcs")
+
+
+annotation_file_E2555_rep1 = tibble(filenames = names(fcs_files_E2555_rep1),
+                               full_filename = fcs_files_E2555_rep1,
+                               insert = case_when(grepl("_34", filenames) ~ "pME034",
+                                                  grepl("_41", filenames) ~ "pME041",
+                                                  .default = "control"),
+                               launch_pad = case_when(grepl("C9", filenames) ~ "C9",
+                                                  grepl("23", filenames) ~ "LP23",
+                                                  .default = "none"),
+                               genotype = case_when(grepl("mCh-", filenames) ~ "mCh_del",
+                                                    .default = "WT"), 
+                               bio_rep = str_extract(filenames, "rep\\d+$"),
+                               treatment = case_when(grepl("SB", filenames) ~ "SB",
+                                                     grepl("PB", filenames) ~ "PB",
+                                                     grepl("UT", filenames) ~ "untransfected",
+                                                     .default = "control"))
+   
+# Load FCS files
+flowset_E2555_rep1 = flowCore::read.flowSet(files = annotation_file_E2555_rep1$full_filename, alter.names = T, truncate_max_range = F, ignore.text.offset = T)
+
+#make dataframe
+annotation_file_E2555_rep1 = data.frame(annotation_file_E2555_rep1)
+rownames(annotation_file_E2555_rep1) = annotation_file_E2555_rep1$filenames
+
+flowCore::sampleNames(flowset_E2555_rep1) = annotation_file_E2555_rep1$filenames
+flowCore::pData(flowset_E2555_rep1) = annotation_file_E2555_rep1
+
+flowset_fluo_E2555_rep1 = flowset_E2555_rep1[,c('BL.B..530_30.A', 'YG.D..610_20.A', 'V.F..450_50.A')]
+colnames(flowset_fluo_E2555_rep1) = c("GFP", "mCherry", "mTurq")
+
+```
+
+```{r}
+total_cell_count_tmp = flowCore::keyword(flowset_fluo_E2555_rep1, "$TOT")[,'$TOT']
+total_cell_count = as.numeric(total_cell_count_tmp)
+names(total_cell_count) = names(total_cell_count_tmp)
+
+
+median_mCherry = sapply(1:length(flowset_fluo_E2555_rep1), function(i){
+  median(flowCore::exprs(flowset_fluo_E2555_rep1[[i]])[,'mCherry'])
+})
+names(median_mCherry) = sampleNames(flowset_fluo_E2555_rep1)
+
+
+median_GFP = sapply(1:length(flowset_fluo_E2555_rep1), function(i){
+  median(flowCore::exprs(flowset_fluo_E2555_rep1[[i]])[,'GFP'])
+})
+names(median_GFP) = sampleNames(flowset_fluo_E2555_rep1)
+
+
+median_mTurq = sapply(1:length(flowset_fluo_E2555_rep1), function(i){
+  median(flowCore::exprs(flowset_fluo_E2555_rep1[[i]])[,'mTurq'])
+})
+names(median_mTurq) = sampleNames(flowset_fluo_E2555_rep1)
+
+
+flowCore::pData(flowset_fluo_E2555_rep1)$median_mCherry = median_mCherry
+flowCore::pData(flowset_fluo_E2555_rep1)$median_GFP = median_GFP
+flowCore::pData(flowset_fluo_E2555_rep1)$median_mTurq = median_mTurq
+
+flowCore::pData(flowset_fluo_E2555_rep1)$total_cell_count = total_cell_count
+
+fcs_tib_E2555_rep1 = tibble(flowCore::pData(flowset_fluo_E2555_rep1))
+```
+
+### Load FACS files from rep2
+```{r}
+#Load FCS files
+fcs_files_E2555_rep2 = dir("/home/c.moene/projects/hopping_technology/04_Hopping_eff_insert_activity/FACS_files/E2534_E2555/rep2", full.names = T)
+names(fcs_files_E2555_rep2) = str_remove(str_remove(str_remove(fcs_files_E2555_rep2, '.*/'), "_Single Cells.fcs"), "export_ME20240502_E2534_")
+
+
+annotation_file_E2555_rep2 = tibble(filenames = names(fcs_files_E2555_rep2),
+                               full_filename = fcs_files_E2555_rep2,
+                               insert = case_when(grepl("_34", filenames) ~ "pME034",
+                                                  grepl("_41", filenames) ~ "pME041",
+                                                  .default = "control"),
+                               launch_pad = case_when(grepl("C9", filenames) ~ "C9",
+                                                  grepl("23", filenames) ~ "LP23",
+                                                  .default = "none"),
+                               genotype = case_when(grepl("mCh-", filenames) ~ "mCh_del",
+                                                    .default = "WT"), 
+                               bio_rep = str_extract(filenames, "^rep\\d+"),
+                               treatment = case_when(grepl("SB", filenames) ~ "SB",
+                                                     grepl("PB", filenames) ~ "PB",
+                                                     grepl("UT", filenames) ~ "untransfected",
+                                                     .default = "control"))
+   
+# Load FCS files
+flowset_E2555_rep2 = flowCore::read.flowSet(files = annotation_file_E2555_rep2$full_filename, alter.names = T, truncate_max_range = F, ignore.text.offset = T)
+
+#make dataframe
+annotation_file_E2555_rep2 = data.frame(annotation_file_E2555_rep2)
+rownames(annotation_file_E2555_rep2) = annotation_file_E2555_rep2$filenames
+
+flowCore::sampleNames(flowset_E2555_rep2) = annotation_file_E2555_rep2$filenames
+flowCore::pData(flowset_E2555_rep2) = annotation_file_E2555_rep2
+
+flowset_fluo_E2555_rep2 = flowset_E2555_rep2[,c('BL.B..530_30.A', 'YG.D..610_20.A', 'V.F..450_50.A')]
+colnames(flowset_fluo_E2555_rep2) = c("GFP", "mCherry", "mTurq")
+
+```
+
+```{r}
+total_cell_count_tmp = flowCore::keyword(flowset_fluo_E2555_rep2, "$TOT")[,'$TOT']
+total_cell_count = as.numeric(total_cell_count_tmp)
+names(total_cell_count) = names(total_cell_count_tmp)
+
+
+median_mCherry = sapply(1:length(flowset_fluo_E2555_rep2), function(i){
+  median(flowCore::exprs(flowset_fluo_E2555_rep2[[i]])[,'mCherry'])
+})
+names(median_mCherry) = sampleNames(flowset_fluo_E2555_rep2)
+
+
+median_GFP = sapply(1:length(flowset_fluo_E2555_rep2), function(i){
+  median(flowCore::exprs(flowset_fluo_E2555_rep2[[i]])[,'GFP'])
+})
+names(median_GFP) = sampleNames(flowset_fluo_E2555_rep2)
+
+
+median_mTurq = sapply(1:length(flowset_fluo_E2555_rep2), function(i){
+  median(flowCore::exprs(flowset_fluo_E2555_rep2[[i]])[,'mTurq'])
+})
+names(median_mTurq) = sampleNames(flowset_fluo_E2555_rep2)
+
+
+flowCore::pData(flowset_fluo_E2555_rep2)$median_mCherry = median_mCherry
+flowCore::pData(flowset_fluo_E2555_rep2)$median_GFP = median_GFP
+flowCore::pData(flowset_fluo_E2555_rep2)$median_mTurq = median_mTurq
+
+flowCore::pData(flowset_fluo_E2555_rep2)$total_cell_count = total_cell_count
+
+fcs_tib_E2555_rep2 = tibble(flowCore::pData(flowset_fluo_E2555_rep2))
+```
+
+### Load FACS data from rep3 pME034 mCh-del
+```{r}
+#Load FCS files
+fcs_files_E2716_rep3 = dir("/home/c.moene/projects/hopping_technology/04_Hopping_eff_insert_activity/FACS_files/E2687_E2716/rep3", full.names = T)
+names(fcs_files_E2716_rep3) = str_remove(str_remove(str_remove(fcs_files_E2716_rep3, '.*/'), "_Single Cells.fcs"), "export_me20241030_E2687_")
+
+
+annotation_file_E2716_rep3 = tibble(filenames = names(fcs_files_E2716_rep3),
+                               full_filename = fcs_files_E2716_rep3,
+                               insert = case_when(grepl("_34", filenames) ~ "pME034",
+                                                  .default = "control"),
+                               launch_pad = case_when(grepl("C9", filenames) ~ "C9",
+                                                  grepl("23", filenames) ~ "LP23",
+                                                  .default = "none"),
+                               genotype = case_when(grepl("mCh-", filenames) ~ "mCh_del",
+                                                    .default = "WT"), 
+                               bio_rep = "rep3",
+                               treatment = case_when(grepl("UT", filenames) ~ "untransfected",
+                                                     .default = "control"))
+   
+# Load FCS files
+flowset_E2716_rep3 = flowCore::read.flowSet(files = annotation_file_E2716_rep3$full_filename, alter.names = T, truncate_max_range = F, ignore.text.offset = T)
+
+#make dataframe
+annotation_file_E2716_rep3 = data.frame(annotation_file_E2716_rep3)
+rownames(annotation_file_E2716_rep3) = annotation_file_E2716_rep3$filenames
+
+flowCore::sampleNames(flowset_E2716_rep3) = annotation_file_E2716_rep3$filenames
+flowCore::pData(flowset_E2716_rep3) = annotation_file_E2716_rep3
+
+flowset_fluo_E2716_rep3 = flowset_E2716_rep3[,c('BL.B..530_30.A', 'YG.D..610_20.A', 'V.F..450_50.A')]
+colnames(flowset_fluo_E2716_rep3) = c("GFP", "mCherry", "mTurq")
+
+```
+
+```{r}
+total_cell_count_tmp = flowCore::keyword(flowset_fluo_E2716_rep3, "$TOT")[,'$TOT']
+total_cell_count = as.numeric(total_cell_count_tmp)
+names(total_cell_count) = names(total_cell_count_tmp)
+
+
+median_mCherry = sapply(1:length(flowset_fluo_E2716_rep3), function(i){
+  median(flowCore::exprs(flowset_fluo_E2716_rep3[[i]])[,'mCherry'])
+})
+names(median_mCherry) = sampleNames(flowset_fluo_E2716_rep3)
+
+
+median_GFP = sapply(1:length(flowset_fluo_E2716_rep3), function(i){
+  median(flowCore::exprs(flowset_fluo_E2716_rep3[[i]])[,'GFP'])
+})
+names(median_GFP) = sampleNames(flowset_fluo_E2716_rep3)
+
+
+median_mTurq = sapply(1:length(flowset_fluo_E2716_rep3), function(i){
+  median(flowCore::exprs(flowset_fluo_E2716_rep3[[i]])[,'mTurq'])
+})
+names(median_mTurq) = sampleNames(flowset_fluo_E2716_rep3)
+
+
+flowCore::pData(flowset_fluo_E2716_rep3)$median_mCherry = median_mCherry
+flowCore::pData(flowset_fluo_E2716_rep3)$median_GFP = median_GFP
+flowCore::pData(flowset_fluo_E2716_rep3)$median_mTurq = median_mTurq
+
+flowCore::pData(flowset_fluo_E2716_rep3)$total_cell_count = total_cell_count
+
+fcs_tib_E2716_rep3 = tibble(flowCore::pData(flowset_fluo_E2716_rep3))
+```
+
+### Load FACS data from rep4 pME034 mCh-del
+```{r}
+#Load FCS files
+fcs_files_E2716_rep4 = dir("/home/c.moene/projects/hopping_technology/04_Hopping_eff_insert_activity/FACS_files/E2687_E2716/rep4", full.names = T)
+names(fcs_files_E2716_rep4) = str_remove(str_remove(str_remove(fcs_files_E2716_rep4, '.*/'), "_Single Cells.fcs"), "export_me20241031_E2687_")
+
+
+annotation_file_E2716_rep4 = tibble(filenames = names(fcs_files_E2716_rep4),
+                               full_filename = fcs_files_E2716_rep4,
+                               insert = case_when(grepl("_34", filenames) ~ "pME034",
+                                                  .default = "control"),
+                               launch_pad = case_when(grepl("C9", filenames) ~ "C9",
+                                                  grepl("23", filenames) ~ "LP23",
+                                                  .default = "none"),
+                               genotype = case_when(grepl("mCh-", filenames) ~ "mCh_del",
+                                                    .default = "WT"), 
+                               bio_rep = "rep4",
+                               treatment = case_when(grepl("UT", filenames) ~ "untransfected",
+                                                     .default = "control"))
+   
+# Load FCS files
+flowset_E2716_rep4 = flowCore::read.flowSet(files = annotation_file_E2716_rep4$full_filename, alter.names = T, truncate_max_range = F, ignore.text.offset = T)
+
+#make dataframe
+annotation_file_E2716_rep4 = data.frame(annotation_file_E2716_rep4)
+rownames(annotation_file_E2716_rep4) = annotation_file_E2716_rep4$filenames
+
+flowCore::sampleNames(flowset_E2716_rep4) = annotation_file_E2716_rep4$filenames
+flowCore::pData(flowset_E2716_rep4) = annotation_file_E2716_rep4
+
+flowset_fluo_E2716_rep4 = flowset_E2716_rep4[,c('BL.B..530_30.A', 'YG.D..610_20.A', 'V.F..450_50.A')]
+colnames(flowset_fluo_E2716_rep4) = c("GFP", "mCherry", "mTurq")
+
+```
+
+```{r}
+total_cell_count_tmp = flowCore::keyword(flowset_fluo_E2716_rep4, "$TOT")[,'$TOT']
+total_cell_count = as.numeric(total_cell_count_tmp)
+names(total_cell_count) = names(total_cell_count_tmp)
+
+
+median_mCherry = sapply(1:length(flowset_fluo_E2716_rep4), function(i){
+  median(flowCore::exprs(flowset_fluo_E2716_rep4[[i]])[,'mCherry'])
+})
+names(median_mCherry) = sampleNames(flowset_fluo_E2716_rep4)
+
+
+median_GFP = sapply(1:length(flowset_fluo_E2716_rep4), function(i){
+  median(flowCore::exprs(flowset_fluo_E2716_rep4[[i]])[,'GFP'])
+})
+names(median_GFP) = sampleNames(flowset_fluo_E2716_rep4)
+
+
+median_mTurq = sapply(1:length(flowset_fluo_E2716_rep4), function(i){
+  median(flowCore::exprs(flowset_fluo_E2716_rep4[[i]])[,'mTurq'])
+})
+names(median_mTurq) = sampleNames(flowset_fluo_E2716_rep4)
+
+
+flowCore::pData(flowset_fluo_E2716_rep4)$median_mCherry = median_mCherry
+flowCore::pData(flowset_fluo_E2716_rep4)$median_GFP = median_GFP
+flowCore::pData(flowset_fluo_E2716_rep4)$median_mTurq = median_mTurq
+
+flowCore::pData(flowset_fluo_E2716_rep4)$total_cell_count = total_cell_count
+
+fcs_tib_E2716_rep4 = tibble(flowCore::pData(flowset_fluo_E2716_rep4))
+```
+
+### Combine all four datasets
+```{r}
+fcs_tib_all = bind_rows(fcs_tib_E2555_rep1, fcs_tib_E2555_rep2, fcs_tib_E2716_rep3, fcs_tib_E2716_rep4)
+fcs_tib_E2555 = bind_rows(fcs_tib_E2555_rep1, fcs_tib_E2555_rep2)
+
+```
+
+### Normalize expression
+```{r}
+#subtract autofluorescence
+autofluo_tib_comb = fcs_tib_all  %>%
+  filter(filenames %in% c("WT_neg_ctrl_rep1", "rep2_WT_neg_ctrl_rep2_001", "round1_WT_ctrl_005", "round2_WT_ctrl_005")) %>% 
+  group_by(bio_rep) %>%
+  summarize(mTurq_WT = mean(median_mTurq),
+            mCherry_WT = mean(median_mCherry),
+            GFP_WT = mean(median_GFP))
+
+#normalize to GFP
+expression_tib_comb = fcs_tib_all %>%
+  left_join(autofluo_tib_comb, join_by(bio_rep)) %>%
+  mutate(median_mTurq_cor = median_mTurq - mTurq_WT,
+         median_mCherry_cor = median_mCherry - mCherry_WT,
+         median_GFP_cor = median_GFP - GFP_WT) %>%
+  mutate(mTurq_norm = median_mTurq_cor / median_GFP_cor,
+         mCherry_norm = median_mCherry_cor / median_GFP_cor)
+
+#normalize to 23_34A (to compare between measurement days and to compare them in general)
+standard_tib = expression_tib_comb %>%
+  filter(launch_pad == "LP23" & genotype == "WT") %>%
+  group_by(bio_rep) %>%
+  summarize(mTurq_norm_standard = mean(mTurq_norm),
+            mCherry_norm_standard = mean(mCherry_norm),
+            GFP_standard = mean(median_GFP_cor))
+
+expression_tib_comb = expression_tib_comb %>%
+  left_join(standard_tib, join_by(bio_rep)) %>%
+  mutate(rel_mTurq = mTurq_norm / mTurq_norm_standard,
+         rel_mCherry = mCherry_norm / mCherry_norm_standard,
+         rel_GFP_cor = median_GFP_cor / GFP_standard)
+```
+
+## Combine Hop efficiency with reporter expression
+```{r}
+hopping_eff_all = 
+hopping_eff_tib_wide_annot2 %>% filter(experiment %in% c("E2555", "E2716") & launch_pad == "C9") %>% 
+  mutate(join_name = paste0(insert, "_", bio_rep, "_", genotype))
+
+expression_tib_comb_all = 
+expression_tib_comb %>% filter(treatment == "untransfected" & launch_pad == "C9") %>%
+  mutate(join_name = paste0(insert, "_", bio_rep, "_", genotype)) %>%
+  left_join(hopping_eff_all)
+```
+
+
+## Fig S4C bottom - Plot - mark mean of both replicates
+```{r}
+mean_tib <- expression_tib_comb_all %>%
+  group_by(insert, genotype) %>%
+  summarise(
+    rel_mTurq = mean(rel_mTurq, na.rm = TRUE),
+    mean_fract_hopped = mean(mean_fract_hopped, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+#Without shaped replicates
+expression_tib_comb_all %>%
+  ggplot(aes(x = rel_mTurq, y = mean_fract_hopped, col = genotype)) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = 1, col = "black", linetype = "dotted") +
+  geom_point(
+    data = mean_tib,
+    aes(x = rel_mTurq, y = mean_fract_hopped),
+    inherit.aes = FALSE,
+    col = "black",
+    size = 2,
+    shape = 4,
+    stroke = 1.4
+  ) +
+  facet_wrap(~ insert) +
+  scale_x_continuous(limits = c(0, NA)) +
+  scale_y_continuous(limits = c(0, NA)) +
+  theme_bw()
+```
+
+#### Density plot
+```{r}
+
+# Export and plot rep1, untreated
+## extract single-cell values from each file
+dens_tib_E2555_rep1 <- map_dfr(seq_along(flowset_fluo_E2555_rep1), function(i) {
+  tibble(
+    GFP = flowCore::exprs(flowset_fluo_E2555_rep1[[i]])[, "GFP"],
+    mTurq = flowCore::exprs(flowset_fluo_E2555_rep1[[i]])[, "mTurq"],
+    mCherry = flowCore::exprs(flowset_fluo_E2555_rep1[[i]])[, "mCherry"],
+    filename = flowCore::sampleNames(flowset_fluo_E2555_rep1)[i]
+  )
+}) %>%
+  left_join(
+    fcs_tib_E2555 %>% select(filenames, insert, genotype, bio_rep, treatment, name, launch_pad),
+    by = c("filename" = "filenames")
+  )
+
+#rep2
+dens_tib_E2555_rep2 <- map_dfr(seq_along(flowset_fluo_E2555_rep2), function(i) {
+  tibble(
+    GFP = flowCore::exprs(flowset_fluo_E2555_rep2[[i]])[, "GFP"],
+    mTurq = flowCore::exprs(flowset_fluo_E2555_rep2[[i]])[, "mTurq"],
+    mCherry = flowCore::exprs(flowset_fluo_E2555_rep2[[i]])[, "mCherry"],
+    filename = flowCore::sampleNames(flowset_fluo_E2555_rep2)[i]
+  )
+}) %>%
+  left_join(
+    fcs_tib_E2555 %>% select(filenames, insert, genotype, bio_rep, treatment, name, launch_pad),
+    by = c("filename" = "filenames")
+  )
+
+dens_tib_E2555_comb = bind_rows(dens_tib_E2555_rep1, dens_tib_E2555_rep2) %>% 
+  mutate(plot_category = case_when(bio_rep == "rep1" & name %in% c("WT_neg_ctrl_rep1", "23_34A_ctrl_rep1", "C9_34_mCh__UT_rep1", "C9_34_mCh-_UT_rep1", "C9_41_mCh__UT_rep1", "C9_41_mCh-_UT_rep1") ~ "set1",
+                                   bio_rep == "rep2" & name %in% c("rep2_WT_neg_ctrl_rep2_001", "rep2_23_34A_ctrl_rep2_003", "rep2_C9_34_mCh+_UT_rep2_004", "rep2_C9_34_mCh-_UT_rep2_007", "rep2_C9_41_mCh-_UT_rep2_013", "rep2_C9_41_mCh+_UT_rep2_010") ~ "set2",
+                                   .default = "other"))
+```
+
+### Fig S4C - Custom plot for paper
+```{r Sup figure 4C, LP-161kb eff vs activity}
+# Add color palette for plotting
+insert_genotype_cols <- c(
+  "pME034_mCh_del" = "#0F6B50",
+  "pME034_WT" = "#63C3A3",
+  "pME041_mCh_del" = "#8A3911",
+  "pME041_WT" = "#F2B08F"
+)
+
+
+#Add plotting variable
+pDensity_C9_FACS_rep1_V3 = 
+dens_tib_E2555_comb %>%
+  mutate(insert_genotype = paste0(insert, "_", genotype)) %>%
+  filter(plot_category != "other" & bio_rep == "rep1" & insert != "control") %>%
+  ggplot(aes(x = mTurq, colour = insert_genotype, fill = insert_genotype, linetype = launch_pad)) +
+  geom_density(alpha = 0.2, linewidth = 1) +
+  facet_grid(. ~ insert) +
+  scale_x_continuous(trans = "log10", limits = c(10, NA)) +
+  theme_bw() +
+  theme(legend.position="right") +
+  labs(
+    title = "Single-cell mTurq distributions, rep1",
+    subtitle = "log10 x-scale",
+    x = "mTurq intensity",
+    y = "Density") +
+  scale_colour_manual(values = insert_genotype_cols) +
+  scale_fill_manual(values = insert_genotype_cols)
+
+
+#Add color variables to hopping efficinecy 
+pCor_C9_FACS_HopEff_V2 = 
+expression_tib_comb_all %>%
+  mutate(insert_genotype = paste0(insert, "_", genotype)) %>%
+  ggplot(aes(x = rel_mTurq, y = mean_fract_hopped, col = insert_genotype)) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = 1, col = "black", linetype = "dotted") +
+  geom_point(
+    data = mean_tib,
+    aes(x = rel_mTurq, y = mean_fract_hopped),
+    inherit.aes = FALSE,
+    col = "black",
+    size = 2,
+    shape = 4,
+    stroke = 1.4
+  ) +
+  facet_wrap(~ insert) +
+  scale_x_continuous(limits = c(0, NA)) +
+  scale_y_continuous(limits = c(0, NA)) +
+  theme_bw() +
+  scale_colour_manual(values = insert_genotype_cols)
+
+pCor_C9_FACS_HopEff_V2
+
+plot_grid(pDensity_C9_FACS_rep1_V3, pCor_C9_FACS_HopEff_V2, ncol = 1, align = "hv", axis = "lr")
+```
+
+
+
+
+# Figure S4A - Nanog long vs short E1845
+In E1891 we tested Nanog long (pCM003) vs Nanog small (pCM002) promoter
+almost same activity but different size. 
+```{r}
+hopping_eff_tib_wide_annot2 %>% filter(experiment == "E1845" & insert %in% c("pCM002", "pCM003")) %>%
+  mutate(merge_name = paste0(experiment, "_", launch_pad, "_", insert))
+
+```
+
+## Load FACS data
+```{r}
+#Load FCS files
+fcs_files_E1891 = dir("/home/c.moene/projects/hopping_technology/04_Hopping_eff_insert_activity/FACS_files/E1845_E1891", full.names = T)
+names(fcs_files_E1891) = str_remove(str_remove(str_remove(fcs_files_E1891, '.*/'), "_Single Cells.fcs"), "export_")
+
+
+annotation_file_E1891 = tibble(filenames = names(fcs_files_E1891),
+                               full_filename = fcs_files_E1891,
+                               insert_name = case_when(grepl("S4", filenames) ~ "NanogS",
+                                                  grepl("L1", filenames) ~ "NanogL",
+                                                  .default = "control"),
+                               insert = case_when(grepl("S4", filenames) ~ "pCM002",
+                                                  grepl("L1", filenames) ~ "pCM003",
+                                                  .default = "control"),
+                               launch_pad = "N1",
+                               genotype = "WT", 
+                               bio_rep = "rep1",
+                               experiment = "E1845",
+                               merge_name = paste0(experiment, "_", launch_pad, "_", insert))
+   
+# Load FCS files
+flowset_E1891 = flowCore::read.flowSet(files = annotation_file_E1891$full_filename, alter.names = T, truncate_max_range = F, ignore.text.offset = T)
+
+#make dataframe
+annotation_file_E1891 = data.frame(annotation_file_E1891)
+rownames(annotation_file_E1891) = annotation_file_E1891$filenames
+
+flowCore::sampleNames(flowset_E1891) = annotation_file_E1891$filenames
+flowCore::pData(flowset_E1891) = annotation_file_E1891
+
+flowset_fluo_E1891 = flowset_E1891[,c('BL1.A')]
+colnames(flowset_fluo_E1891) = c("GFP")
+```
+
+```{r}
+total_cell_count_tmp = flowCore::keyword(flowset_fluo_E1891, "$TOT")[,'$TOT']
+total_cell_count = as.numeric(total_cell_count_tmp)
+names(total_cell_count) = names(total_cell_count_tmp)
+
+
+median_GFP = sapply(1:length(flowset_fluo_E1891), function(i){
+  median(flowCore::exprs(flowset_fluo_E1891[[i]])[,'GFP'])
+})
+names(median_GFP) = sampleNames(flowset_fluo_E1891)
+
+flowCore::pData(flowset_fluo_E1891)$median_GFP = median_GFP
+flowCore::pData(flowset_fluo_E1891)$total_cell_count = total_cell_count
+
+fcs_tib_E1891 = tibble(flowCore::pData(flowset_fluo_E1891))
+```
+
+## autofluo corrected
+```{r}
+tib_E1891_autofluo = 
+fcs_tib_E1891 %>% filter(insert == "control") %>%
+  select(median_GFP) %>%
+  dplyr::rename(median_GFP_ctrl = median_GFP)
+
+fcs_tib_E1891 = fcs_tib_E1891 %>% bind_cols(tib_E1891_autofluo) %>%
+  mutate(GFP_cor = median_GFP - median_GFP_ctrl) 
+
+fcs_tib_E1891_sel = fcs_tib_E1891 %>% 
+  select(insert_name, insert, launch_pad, merge_name, GFP_cor, total_cell_count)
+
+```
+
+## Normalize
+```{r}
+# Normalize NanogL to NanogS
+E1891_NanogS_GFP_cor = fcs_tib_E1891_sel %>% filter(insert_name == "NanogS") %>% select(GFP_cor) %>% dplyr::rename(GFP_cor_NanogS = "GFP_cor")
+
+fcs_tib_E1891_sel = fcs_tib_E1891_sel %>% 
+  bind_cols(E1891_NanogS_GFP_cor) %>%
+  mutate(rel_GFP = GFP_cor/GFP_cor_NanogS)
+```
+**Conclusion:** 
+NanogL is 1.29 higher than NanogS expression. 
+
+
+## Plot
+```{r}
+tib_hop_eff_E1891 =
+hopping_eff_tib_wide_annot2 %>% filter(experiment == "E1845" & insert %in% c("pCM002", "pCM003")) %>%
+  mutate(merge_name = paste0(experiment, "_", launch_pad, "_", insert)) %>%
+  left_join(fcs_tib_E1891_sel)
+
+```
+
+### Plot hopping efficiency as barplot
+```{r}
+#Define Nanog colors
+nanog_cols <- c(
+  "control" = "grey75",
+  "NanogS" = "#4DB6AC",
+  "NanogL" = "#E69F00"
+)
+
+# with annotated colors
+pHop_eff_E1891 = 
+  tib_hop_eff_E1891 %>% 
+  mutate(insert_name = factor(insert_name, levels = c("NanogS", "NanogL"))) %>%
+  ggplot(aes(x = insert_name, y = mean_fract_hopped, fill = insert_name)) +
+  stat_summary(fun = mean, geom = "col", width = 0.6) +
+  scale_colour_manual(values = nanog_cols) +
+  scale_fill_manual(values = nanog_cols) +
+  scale_y_continuous(limits = c(0, 1)) +
+  ggtitle("Hopped fraction of NanogS vs NanogL") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+pHop_eff_E1891
+```
+**Conclusion:**
+Two technical replicates of NanogS (pCM002) and NanogL (pCM003) from E1845. Mean transposed fraction for NanogS = 0.47 (47%) versus NanogL = 0.37 (37%). 
+
+
+### Plot Density plots of files
+```{r}
+# extract single-cell GFP values from each file
+dens_tib_E1891 <- map_dfr(seq_along(flowset_fluo_E1891), function(i) {
+  tibble(
+    GFP = flowCore::exprs(flowset_fluo_E1891[[i]])[, "GFP"],
+    filename = flowCore::sampleNames(flowset_fluo_E1891)[i]
+  )
+}) %>%
+  left_join(
+    fcs_tib_E1891 %>% select(filenames, insert_name, insert),
+    by = c("filename" = "filenames")
+  )
+
+# density plot
+pDensity_E1891 = 
+ggplot(dens_tib_E1891, aes(x = GFP, colour = insert_name, fill = insert_name)) +
+  geom_density(alpha = 0.2, linewidth = 1) +
+  scale_colour_manual(values = nanog_cols) +
+  scale_fill_manual(values = nanog_cols) +
+  scale_x_continuous(trans = "log10", limits = c(1, 1e4)) +
+  theme_bw() +
+  theme(legend.position="bottom") +
+  labs(
+    title = "Single-cell GFP distributions",
+    subtitle = "log10 x-scale",
+    x = "GFP intensity (BL1.A)",
+    y = "Density")
+
+pDensity_E1891
+```
+
+### Fig S4A - Plot combined
+```{r Fig S4A}
+plot_grid(pDensity_E1891, pHop_eff_E1891, ncol = 2, axis = "l", align = "hv", rel_widths = c(1, 0.7))
+```
+**Conclusion:**
+NanogS is 1671bp long and NanogL is 2707bp long. Both show almost the same activiyt in launch pad N1 but show a difference in hopping efficiency. This is most likely due to the size difference in the insert. 
+
+
+

@@ -1,0 +1,782 @@
+---
+title: "CM20260312_process_data_Omar_hopping_2reps"
+output: html_document
+date: "2026-03-12"
+---
+
+#Experiment
+We induced hopping (transposition) in three clonal cell lines from Omar with the nested SB-in-PB. This experiment (E2902) contains SB hopping from the clones in two biological replicates (2xWT78, 2xWT79, 2xWT83) and mapping of the original PB integrations.
+
+
+This script also contains:
+- integrations site motifs (Figure 4)
+
+In different scripts:
+- correlation of integrations with contact
+- correlation of transposition efficiency with chromatin
+
+
+# Setup
+##Libraries
+Load the libraries and set the parameters.
+```{r load_libraries}
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(gtools)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggh4x)
+library(stringr)
+library(readr)
+library(knitr)
+library(cowplot)
+library(ggpubr)
+
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(Biostrings)
+library(ggseqlogo)
+library(ShortRead)
+library(GENOVA)
+library(GGally)
+
+library(ggbeeswarm)
+library(scales)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+```
+
+## Paths & parameters
+```{r paths_parameters}
+
+#datatag
+datetag = paste0("CM",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/home/c.moene/projects/hopping_technology/02_Omar_clone_pools/analysis_",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+```
+
+```{r knits setup}
+
+library(knitr)
+opts_chunk$set(cache = F,
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               dpi = 300,
+               fig.path = paste0(file.path(output_dir), "/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+```{r}
+#cutoff to call an integration local
+distance_local_hop = 2E6
+```
+
+
+# Load SB hopped clones 
+
+## PB clone and SB hopped pools
+```{r}
+MappingDataDir_E2902_SB <- "/DATA/usr/c.moene/projects/Hopping_technology/E2913_mapping_integrations_E1845_E2866_E2902_and_others/pipeline_results/mm10/home/insertions/"
+
+# List all files
+metadata_E2902 <- tibble(file = dir(MappingDataDir_E2902_SB, 
+                   recursive = T, full.names = T)) %>%
+  # filter(grepl("insertions_ref", file)) %>%
+  mutate(sample = str_remove(basename(file), "\\..*"))
+
+
+metadata_E2902_Omar = metadata_E2902 %>%
+  filter(grepl("E2902", sample)) %>%
+  #only take the PB clone and SB pool
+  filter(!grepl("_[1,2]_PB", sample))
+
+# Load all files
+tib_ints_E2902_Omar <- bind_rows(lapply(1:nrow(metadata_E2902_Omar),
+                        function(i) {
+                          tmp <- read_tsv(metadata_E2902_Omar$file[i],
+                                          col_types = cols(
+                                            .default = col_character(),
+                                            start = col_double(),
+                                            end = col_double(),
+                                            # gap_concordance = col_double(),
+                                            read_count = col_double(),
+                                            mapq = col_double(),
+                                            read_count_1 = col_double(),
+                                            mapq_1 = col_character(),
+                                            read_count_2 = col_double(),
+                                            mapq_2 = col_character(),
+                                            # sump = col_double(),
+                                            # p_adj = col_double()
+                                          )) %>%
+                            mutate(sample = metadata_E2902_Omar$sample[i])
+                        }))
+
+tib_ints_E2902_Omar_annot = tib_ints_E2902_Omar %>%
+  mutate(type = case_when(grepl("PB", sample) ~ "PB_clone",
+                          .default = "SB_pool"),
+         replicate = case_when(grepl("_1_", sample) ~ "rep1", 
+                               grepl("_2_", sample) ~ "rep2",
+                               type == "PB_clone" ~ "rep1"), 
+         )
+
+```
+
+## combine and filter
+```{r}
+tib_Omar_comb = tib_ints_E2902_Omar_annot%>%
+  mutate(parental_clone = str_extract(sample, "WT[0-9]*"),
+         mapped_arms = case_when(read_count_1 == 0 ~ "rv_only",
+                                 read_count_2 == 0 ~ "fw_only",
+                                 read_count_1 > 0 & read_count_2 > 0 ~ "both_arms"),
+         chr = factor(chr, levels = paste0("chr", c(1:19, "X", "Y")))) %>%
+  filter(!is.na(chr)) #remove mitochondrial insertions and Tn5_plasmid insertions
+
+tib_Omar_comb_PB_filt = tib_Omar_comb %>%
+  filter(type == "PB_clone") %>%
+  filter((read_count > 10 & read_count_1 > 1 & read_count_2 > 1))
+
+tib_Omar_comb_SB_filt = tib_Omar_comb %>%
+  filter(type == "SB_pool") # no readcount filtering, this mapping is not exhaustive
+
+
+#cleanup env
+rm(tib_Omar_comb, tib_ints_E2902_Omar_annot)
+```
+
+## PB launch site reference
+Make a tibble of the PB ints as reference
+```{r}
+tib_PB_ints = tib_Omar_comb_PB_filt %>%
+  dplyr::select(parental_clone, chr, start, end) %>%
+  distinct() %>%
+  mutate(LP_name = paste0(parental_clone, "_", chr, "_", start))
+
+# write_tsv(tib_PB_ints, '/home/c.moene/projects/hopping_technology/02_Omar_clone_pools/rds/CM20260313_Omar_PB_ints_filtered.tsv')
+
+tib_PB_ints= read_tsv('/home/c.moene/projects/hopping_technology/02_Omar_clone_pools/rds/CM20260313_Omar_PB_ints_filtered.tsv') %>%
+  mutate(chr = factor(chr, levels = paste0("chr", c(1:19, "X", "Y"))))
+
+tib_PB_ints %>% 
+  group_by(parental_clone) %>%
+  summarize(n()) %>%
+  kable()
+```
+
+
+
+#Data quality
+## Is it reasonable to filter for 1 read
+```{r}
+# number of insertions per chr
+tib_Omar_comb_SB_filt %>%
+  mutate(one_read = ifelse(read_count == 1, "one_read", "more_reads")) %>%
+  mutate(one_read = factor(one_read, levels = c("one_read", "more_reads"))) %>%
+  ggplot(aes(x = chr)) +  
+  facet_grid(replicate + one_read ~ parental_clone, scales = 'free_y') + 
+  geom_bar() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) 
+
+#fraction of insertions per chr
+tib_Omar_comb_SB_filt %>%
+  mutate(one_read = ifelse(read_count == 1, "one_read", "more_reads")) %>%
+  mutate(one_read = factor(one_read, levels = c("one_read", "more_reads"))) %>%
+  group_by(parental_clone, replicate, one_read, chr) %>%
+  summarize(N_ints = n()) %>%
+  group_by(parental_clone, replicate, one_read) %>%
+  mutate(fract_of_ints = N_ints/sum(N_ints)) %>%
+  ggplot(aes(x = chr, y = fract_of_ints)) +  
+  facet_grid(replicate + one_read ~ parental_clone, scales = 'free_y') + 
+  geom_col() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) 
+
+
+tib_Omar_comb_SB_filt %>%
+  mutate(one_read = ifelse(read_count == 1, "one_read", "more_reads")) %>%
+  mutate(one_read = factor(one_read, levels = c("one_read", "more_reads"))) %>%
+  group_by(parental_clone, replicate, one_read) %>%
+  summarize(N_ints = n())
+```
+
+The distribution across chromosomes looks really similar when filtering for more reads or looking only at the one-read integrations (although a tiny bit more 'noise' on other chromosomes). So we can safely use the single read integrations
+And filtering for only one read gives us >5x more integrations per replicate.
+
+
+## Ideograms
+```{r S2A_ideogram_SB_hopping, fig.height = 6}
+chr_lengths = read_tsv('/DATA/usr/c.moene/public_data/mm10_chrom_sizes', col_names = 
+          c('chr', 'length')) %>%
+  mutate(chr_fc = factor(chr, levels = c(paste0('chr', 1:19), 'chrX', 'chrY'))) %>%
+  mutate(chr = chr_fc)
+
+# all reps combined
+ggplot(tib_Omar_comb_SB_filt, 
+       aes(x = as.numeric(chr) - 0.2,
+           xend = as.numeric(chr) + 0.2,
+           y = start, yend = start)) + 
+  facet_grid(. ~ parental_clone) +
+  geom_col(data = chr_lengths, aes(x = chr, y=  length), fill = 'lightgrey', inherit.aes = F, width = 0.5) +
+  ggrastr::rasterise(geom_segment(,
+    alpha = 0.05, linewidth = 0.1
+  ), dpi = 600) +
+  geom_segment(data = tib_PB_ints,
+               col = 'red', alpha =1,
+               aes(x = as.numeric(chr) + 0.2,
+                   xend = as.numeric(chr) + 0.6), linewidth = 0.5)  +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n = 4), labels = scales::unit_format(scale = 1E-6, accuracy = 1, unit=NULL)) +
+  ylab('Genomic coordinate (Mb)') +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = 'none',
+        panel.grid = element_blank(),
+         axis.title.x = element_blank(),
+        aspect.ratio = 2) 
+
+```
+All clones in the supplement
+
+Only WT78 for main figure
+```{r 2A_ideogram_SB_hopping, fig.height = 6}
+chr_lengths = read_tsv('/DATA/usr/c.moene/public_data/mm10_chrom_sizes', col_names = 
+          c('chr', 'length')) %>%
+  mutate(chr_fc = factor(chr, levels = c(paste0('chr', 1:19), 'chrX', 'chrY'))) %>%
+  mutate(chr = chr_fc)
+
+# all reps combined
+ggplot(filter(tib_Omar_comb_SB_filt, parental_clone == "WT78"), 
+       aes(x = as.numeric(chr) - 0.3,
+           xend = as.numeric(chr) + 0.3,
+           y = start, yend = start)) + 
+  facet_grid(. ~ parental_clone) +
+  geom_col(data = chr_lengths, aes(x = chr, y=  length), fill = 'lightgrey', inherit.aes = F, width = 0.6) +
+  ggrastr::rasterise(geom_segment(,
+    alpha = 0.05, linewidth = 0.1
+  ), dpi = 600) +
+  geom_segment(data = filter(tib_PB_ints, parental_clone == "WT78"),
+               col = 'red', alpha =1,
+               aes(x = as.numeric(chr) + 0.3,
+                   xend = as.numeric(chr) + 0.55), linewidth = 1)  +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n = 4), labels = scales::unit_format(scale = 1E-6, accuracy = 1, unit=NULL)) +
+  ylab('Genomic coordinate (Mb)') +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = 'none',
+        panel.grid = element_blank(),
+         axis.title.x = element_blank(),
+        aspect.ratio = 1.5) 
+
+```
+
+### missing PB sites?
+Show the 3 positions with high density SB and no mapped PB integration: 
+```{r}
+
+
+ggplot(filter(tib_Omar_comb_SB_filt, parental_clone == "WT78" & chr == "chr1"),
+       aes(x = start)) +
+  geom_density() +
+  geom_rug(alpha = 0.1, linewidth = 0.1) +
+  geom_vline(data = filter(tib_PB_ints, parental_clone == "WT78"  & chr == "chr1"),
+               col = 'red', alpha = 1,
+               aes(xintercept = start)) +#, linewidth = 1)
+  geom_vline(xintercept = 9E6, col = 'purple') +
+  scale_x_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n = 20), labels = scales::unit_format(scale = 1E-6, accuracy = 1, unit=NULL)) +
+  theme_bw()
+
+ggplot(filter(tib_Omar_comb_SB_filt, parental_clone == "WT78" & chr == "chr11"),
+       aes(x = start)) +
+  geom_density() +
+  geom_rug(alpha = 0.1, linewidth = 0.1) +
+  geom_vline(data = filter(tib_PB_ints, parental_clone == "WT78"  & chr == "chr11"),
+               col = 'red', alpha = 1,
+               aes(xintercept = start)) +#, linewidth = 1)
+  geom_vline(xintercept = 47E6, col = 'purple') +
+  scale_x_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n = 20), labels = scales::unit_format(scale = 1E-6, accuracy = 1, unit=NULL)) +
+  theme_bw()
+
+ggplot(filter(tib_Omar_comb_SB_filt, parental_clone == "WT83" & chr == "chr17"),
+       aes(x = start)) +
+  geom_density() +
+  geom_rug(alpha = 0.1, linewidth = 0.1) +
+  geom_vline(data = filter(tib_PB_ints, parental_clone == "WT83" & chr == "chr17"),
+               col = 'red', alpha = 1,
+               aes(xintercept = start)) +#, linewidth = 1)
+  geom_vline(xintercept = 8E6, col = 'purple') +
+  scale_x_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n = 20), labels = scales::unit_format(scale = 1E-6, accuracy = 1, unit=NULL)) +
+  theme_bw()
+```
+
+## Example density plot
+
+Example plot of one chromosome and how we use the 2mb region
+```{r, 2C_example_2Mb_region, fig.width = 4, fig.height = 8}
+ggplot(filter(tib_Omar_comb_SB_filt, parental_clone == "WT78" & chr == "chr2"),
+       aes(x = start)) +
+  geom_density(adjust = 0.2) +
+  geom_rug(alpha = 0.1, linewidth = 0.1, length = unit(0.1, "npc"),) +
+  geom_vline(data = filter(tib_PB_ints, parental_clone == "WT78"  & chr == "chr2"),
+               col = 'red', alpha = 1,
+               aes(xintercept = start)) +#, linewidth = 1) +
+  geom_rect(data = filter(tib_PB_ints, parental_clone == "WT78"  & chr == "chr2"),
+            aes(xmin = start - 2E6, ymax = start + 2E6), ymin = 0, ymax = Inf, fill = 'red', alpha = 0.3)+
+  geom_segment(x = 0, xend = filter(chr_lengths, chr == "chr2")$length, y = 0,yend = 0, col = 'black') +
+  # geom_vline(xintercept = 9E6, col = 'purple') +
+  scale_x_continuous(expand=expansion(mult = c(0, 0.05)),
+                     limits = c(0, NA),
+                     breaks = scales::pretty_breaks(n = 20), labels = scales::unit_format(scale = 1E-6, accuracy = 1, unit=NULL)) +
+  scale_y_continuous(expand = expansion(mult = c(0.12, 0.05)), limits = c(0, NA))+
+  theme_classic() +
+  coord_flip() +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        )
+```
+
+## statistics
+```{r}
+tib_Omar_comb_SB_filt %>%
+  group_by(parental_clone) %>%
+  summarize(n())
+```
+
+
+# Link SB to PB
+```{r}
+#get mouse genome seqinfo
+library(BSgenome.Mmusculus.UCSC.mm10)
+seqinfo_mm10 <- seqinfo(BSgenome.Mmusculus.UCSC.mm10)
+
+
+parental_cell_lines = unique(tib_Omar_comb_PB_filt$parental_clone)
+
+SB_linked_tib_ls = lapply(parental_cell_lines, function(cl){
+  #make granges of the integrations
+  parental_tib =  filter(tib_Omar_comb_PB_filt, parental_clone == cl & replicate == "rep1")
+  parental_gr = parental_tib %>%
+    GRanges(seqinfo = seqinfo_mm10)
+  
+  SB_tib = filter(tib_Omar_comb_SB_filt, parental_clone == cl) %>% dplyr::filter(!is.na(chr))
+  SB_gr = SB_tib %>%
+    GRanges(seqinfo = seqinfo_mm10)
+  
+  #find nearest
+  nearest_idx <- GenomicRanges::nearest(SB_gr, parental_gr, ignore.strand = T)
+  
+  SB_tib_cl = SB_tib %>% 
+    mutate(nearest_parental_idx = nearest_idx,
+           nearest_parental_start = parental_tib$start[nearest_idx],
+           dist_from_PB = start - nearest_parental_start,
+           abs_dist_from_PB = abs(dist_from_PB))
+})
+ 
+tib_PB_ints_minimal = tib_PB_ints %>% dplyr::select(-end)
+  
+SB_linked_tib = bind_rows(SB_linked_tib_ls) %>%
+  left_join(tib_PB_ints_minimal, by = join_by(nearest_parental_start == start, chr == chr,  parental_clone == parental_clone))
+
+# saveRDS(SB_linked_tib, "/home/c.moene/projects/hopping_technology/02_Omar_clone_pools/rds/CM20260330_PB_linked_filt_SB_ints_2reps.rds")
+```
+
+### local fraction
+Which percentage is within 2Mb of a launch pad?
+```{r}
+fract_local_tib = SB_linked_tib %>% 
+  mutate(local_hop = abs_dist_from_PB < distance_local_hop & !is.na(abs_dist_from_PB)) %>%
+  group_by(parental_clone, replicate) %>%
+  summarize(N_local_hop = sum(local_hop),
+            fract_local_hop = sum(local_hop)/length(local_hop))
+summary(fract_local_tib$fract_local_hop)
+
+SB_linked_tib %>% 
+  mutate(local_hop = abs_dist_from_PB < distance_local_hop & !is.na(abs_dist_from_PB)) %>%
+  # group_by(parental_clone, replicate) %>%
+  summarize(N_local_hop = sum(local_hop),
+            fract_local_hop = sum(local_hop)/length(local_hop))
+```
+47% of integrations is within 2Mb of a LP, and this is consistent across replicates
+
+
+
+## density around LPs
+
+```{r 2C_density_around_LPs, fig.width = 4, fig.height = 4}
+ggplot(SB_linked_tib) +
+  geom_density(aes(x = dist_from_PB, group = LP_name), col = 'darkgrey', linewidth = 0.3) +
+  geom_density(aes(x = dist_from_PB), col = 'black', linewidth = 0.7)+
+  scale_x_continuous(limits = c(-4E6, 4E6),
+                     expand=c(0,0),
+                     breaks = scales::pretty_breaks(n = 5), labels = scales::unit_format(scale = 1E-6, accuracy = 1, unit=NULL)) +
+  xlab('distance from LP (Mb)') +
+  theme_bw()  +
+  theme(aspect.ratio = 1)
+
+```
+
+
+## density on other chromosomes
+
+What is the density of integrations on other chromosomes.
+
+
+Manually curate the chromosomes without any integrations (so add the three clear densities of SB integrations that suggest we missed a PB integration there).
+```{r}
+visual_LPs = tibble(parental_clone = c("WT78", "WT78", "WT83"),
+                    chr = c("chr1", "chr11", "chr17"))
+chr_with_PB = tib_PB_ints %>%
+  select(parental_clone, chr) %>%
+  bind_rows(visual_LPs) %>%
+  distinct() %>%
+  mutate(LP_present = TRUE)
+
+SB_ints_per_chr = SB_linked_tib %>%
+  group_by(parental_clone, chr) %>%
+  summarise(N_ints = n())
+
+SB_density_per_chr = expand_grid(parental_clone = c("WT78", "WT79", "WT83"),
+            chr = paste0("chr", c(1:19,"X"))) %>%
+  left_join(chr_with_PB) %>%
+  replace_na(list(LP_present = FALSE)) %>%
+  # filter(!LP_present) %>%
+  left_join(chr_lengths) %>%
+  left_join(SB_ints_per_chr) %>%
+  mutate(density_chr = N_ints / length )
+
+ggplot(SB_density_per_chr, aes(x = LP_present, y=density_chr, col = parental_clone)) +
+  geom_point()+
+  theme_bw()
+
+SB_density_per_chr %>%
+  group_by(parental_clone, LP_present) %>%
+  summarize(total_length = sum(length),
+            total_ints = sum(N_ints)) %>%
+  mutate(total_density = total_ints/total_length) %>%
+  mutate(ints_per_Mb = total_density * 1E6,
+         ints_4Mb_region = total_density * 4E6)
+
+
+SB_density_per_chr %>%
+  group_by(parental_clone, LP_present) %>%
+  summarize(total_length = sum(length),
+            total_ints = sum(N_ints)) %>%
+  mutate(total_density = total_ints/total_length) %>%
+  mutate(ints_4Mb_region = total_density * 4E6) %>%
+  filter(!LP_present) %>%
+  dplyr::select(parental_clone, ints_4Mb_region) %>%
+  kable()
+```
+
+
+# Calculate hopping efficiency
+
+Count local integrations
+```{r}
+SB_linked_tib %>% 
+  filter(abs_dist_from_PB <= distance_local_hop) %>%
+  mutate(LP_name = paste0(parental_clone, "_", chr, "_", nearest_parental_start)) %>%
+  drop_na() %>%
+  group_by(replicate, parental_clone, LP_name) %>% 
+  summarise(count = n())
+```
+
+Filter for local integrations
+
+```{r}
+SB_ints_per_PB_rep = 
+  SB_linked_tib %>%
+  filter(abs_dist_from_PB < distance_local_hop) %>% #only take the local hops
+  group_by(replicate, parental_clone, chr, nearest_parental_idx,nearest_parental_start, ) %>%
+  summarize(N_local_SB_ints = n(),
+            median_dist = median(abs_dist_from_PB),
+            mean_dist = mean(abs_dist_from_PB),
+            N_within_10kb = sum(abs_dist_from_PB <= 10E3)) %>%
+  dplyr::rename(start = nearest_parental_start) %>%
+  left_join(tib_PB_ints) %>%
+  #calculate number of hopped ints, relative to the mean of that parental clone
+  #because pool size (number of mapped cells) as well as number of LPs differs between clones
+  group_by(replicate, parental_clone) %>%
+  mutate(rel_SB_ints_parental = N_local_SB_ints / mean(N_local_SB_ints)) 
+
+# saveRDS(SB_ints_per_PB_rep, "/home/c.moene/projects/hopping_technology/02_Omar_clone_pools/rds/CM20260330_SB_ints_per_PB_2reps.rds")
+
+
+```
+
+
+## Get numbers 
+```{r}
+#How many do we have in total for the replicates
+kable(SB_linked_tib %>% group_by(parental_clone, replicate) %>% summarise(count = n()))
+SB_linked_tib %>% 
+  group_by(parental_clone, replicate) %>%
+  summarise(count = n()) %>%
+  pivot_wider(names_from = parental_clone, values_from = count) %>%
+  kable()
+
+#How many do we have local around the LPs
+kable(SB_ints_per_PB_rep %>% group_by(parental_clone, replicate) %>% summarise(count = sum(N_local_SB_ints)))
+kable(SB_ints_per_PB_rep %>% group_by(parental_clone, replicate, LP_name) %>% summarise(count = sum(N_local_SB_ints)))
+
+
+```
+
+## Correlation relative integration count
+```{r S2_correlation_rel_SB_count}
+#correlation relative SB integration count
+
+SB_ints_per_PB_rep %>%
+  dplyr::select(replicate, parental_clone, LP_name, rel_SB_ints_parental) %>%
+  pivot_wider(names_from = replicate, values_from = rel_SB_ints_parental) %>%
+  ggplot( aes(x = rep1, y = rep2)) +
+  geom_smooth(method = 'lm', col = 'black') +
+  geom_point(aes(col = parental_clone)) +
+  scale_x_continuous(limits =c(0.2, 1.7), expand = c(0,0)) +
+  scale_y_continuous(limits =c(0.2, 1.7), expand = c(0,0)) +
+  labs(x = "relative number SB insertions replicate 1",
+       y= "relative number SB insertions replicate 2") +
+  stat_cor(method = 'pearson') +
+  theme_bw()
+
+
+
+#instead just correlate absolute SB counts 
+
+SB_ints_per_PB_rep %>%
+  dplyr::select(replicate, parental_clone, LP_name, N_local_SB_ints) %>%
+  pivot_wider(names_from = replicate, values_from = N_local_SB_ints) %>%
+  ggplot( aes(x = rep1, y = rep2)) +
+  geom_smooth(method = 'lm', col = 'black') +
+  geom_point(aes(col = parental_clone)) +
+  # scale_x_continuous(limits =c(0.2, 1.7), expand = c(0,0)) +
+  # scale_y_continuous(limits =c(0.2, 1.7), expand = c(0,0)) +
+  labs(x = "absolute number SB insertions replicate 1",
+       y= "absolute number SB insertions replicate 2") +
+  stat_cor(method = 'pearson') +
+  theme_bw()
+
+
+
+
+```
+This demonstrates why we need to normalize within the group to be able to compare between the groups 
+
+## Distribution of hop efficiencies
+```{r 2C_SB_counts_per_LP}
+
+
+#or the total
+SB_ints_per_PB_rep %>%
+  group_by(parental_clone, LP_name) %>%
+  summarize(total_ints = sum(N_local_SB_ints)) %>%
+  ggplot(aes(x = parental_clone, y = total_ints)) + 
+  geom_violin() +
+  geom_jitter(width = 0.1, height = 0) +
+  scale_y_continuous(limits = c(0, NA), expand=expansion(mult = c(0, 0.05))) +
+  ylab('local SB integrations per launch pad' )+
+  xlab('parental clone')+
+  theme_bw()
+
+# get the numbers
+SB_ints_per_PB_rep %>%
+  group_by(parental_clone, LP_name) %>%
+  summarize(total_ints = sum(N_local_SB_ints)) %>%
+  summarize(min_ints = min(total_ints),
+            max_ints = max(total_ints)) %>%
+  mutate(fold_min_max = max_ints / min_ints) %>%
+  kable()
+```
+
+
+# Motif insertion sites
+For Figure 4A: what is the sequence motif of the SB integrations?
+
+WHY does number of integrations change?
+```{r 4A_motif_SB_insertions}
+library(ggseqlogo)
+#get GRanges of integrations
+integration_coordinates_gr = SB_linked_tib %>%
+  filter(strand != "*") %>%
+  select(chr, start, strand) %>%
+  mutate(end = start + 1) %>%
+  GRanges() 
+
+surrounding_ints_gr =  resize(integration_coordinates_gr, 14, fix = 'center')
+
+Biostrings::getSeq(BSgenome.Mmusculus.UCSC.mm10, surrounding_ints_gr[1:10])
+
+seqs_for_logo = as.character(Biostrings::getSeq(BSgenome.Mmusculus.UCSC.mm10, surrounding_ints_gr))
+
+#for some reason the ggseqlogo cannot handle 500,000 sequences, so I just subsample to 200,000
+ggseqlogo(seqs_for_logo[!grepl("N", seqs_for_logo)])
+```
+
+Is this motif completely independent on how it was mapped?
+```{r S4B_motif_both_arms}
+tib_seq_by_map = SB_linked_tib %>%
+  filter(strand != "*") %>%
+  mutate(seq = seqs_for_logo)
+
+ggseqlogo(filter(tib_seq_by_map, mapped_arms == "both_arms" & !grepl("N", seq))$seq)
+```
+
+```{r S4B_motif_right_arm}
+ggseqlogo(filter(tib_seq_by_map, mapped_arms == "fw_only" & !grepl("N", seq))$seq) #right arm
+
+```
+
+```{r S4B_motif_left_arm}
+ggseqlogo(filter(tib_seq_by_map, mapped_arms == "rv_only" & !grepl("N", seq))$seq) #left arm
+```
+
+
+In the logo we see a preference for an extra flanking A (upstream) and T (downstream).
+Do these specifically occur together, or is there just a preference for each separately?
+And how often do they really occur?
+```{r}
+
+seqs_tib = tibble(seq = seqs_for_logo) %>%
+  mutate(ins_site = substr(seq, 7,8),
+         left_flank = substr(seq,4,4),
+         right_flank = substr(seq,11,11))%>%
+  mutate(flanks = case_when(left_flank == "A" & right_flank == "T" ~ 'both',
+                            left_flank == "A" & right_flank != "T" ~ 'left_only',
+                            left_flank != "A" & right_flank == "T" ~ 'right_only',
+                            .default = 'none'
+                            )) 
+
+annots_logo = tibble(TA_site = TRUE,
+  flanks = c("both", "left_only", "right_only", "none"),
+                     motif = c("ANNTANNT",
+                               "ANNTANNV",
+                               "BNNTANNT",
+                               "BNNTANNV"))
+
+seqs_tib %>%
+  mutate(TA_site = ins_site == "TA") %>%
+  group_by(TA_site, flanks) %>%
+  summarize(N = n()) %>%
+  left_join(annots_logo) %>%
+  group_by(TA_site)%>%
+  mutate(fract = N / sum(N))
+
+seqs_tib %>%
+  mutate(TA_site = ins_site == "TA") %>%
+  filter(TA_site)%>%
+  group_by( flanks) %>%
+  summarize(N = n()) %>%
+  left_join(annots_logo) %>%
+  mutate(fract = N / sum(N))
+```
+Turn this into a table for only the integrations with TA, 4 possible motifs, give fractions
+
+Is both as expected from left and right only?
+```{r}
+seqs_tib %>%
+  filter(ins_site == "TA") %>%
+  summarize(f_left = sum(left_flank == "A")/n(),
+            f_right = sum(right_flank == "T")/n(),
+            expect_both = f_left * f_right * n(),
+            obs_both = sum(left_flank == "A" & right_flank == "T"))
+
+
+```
+So observed both is slightly less than expected.
+
+Sequence logo when there is no TA
+```{r S4C_no_secondary_motif}
+seqs_no_TA = seqs_tib %>%
+  filter(ins_site != "TA") %>%
+  filter(!grepl("N", seq)) %>%
+  pull(seq) 
+
+ggseqlogo(seqs_no_TA)
+
+```
+
+Confidence of integrations without a TA
+```{r}
+tib_seq_by_map %>%
+  mutate(ins_site = substr(seq, 7,8),
+         TA_site = ins_site == "TA") %>%
+  group_by(TA_site) %>%
+  summarize(av_read_count = mean(read_count),
+            av_read_count_1 = mean(read_count_1),
+            av_read_count_2 = mean(read_count_2),
+            av_mapq= mean(mapq))
+  
+tib_seq_by_map %>%
+  mutate(ins_site = substr(seq, 7,8),
+         TA_site = ins_site == "TA") %>%
+  group_by(ins_site) %>%
+  summarize(av_read_count = mean(read_count),
+            av_read_count_1 = mean(read_count_1),
+            av_read_count_2 = mean(read_count_2),
+            av_mapq= mean(mapq),
+            N = n())
+```
+Non-TA sites are supported by slightly fewer reads and slightly lower mapping quality, but it does not look worrisome. I think most of these integrations are still real integrations. 
+
+
+## frequency of motif in the mouse genome
+I want to count how often each motif around TA occurs in the mouse genome. 
+There is a problem that a single TA can be assigned to multiple windows of the motif, so instead of searching for the different motifs:
+take all TA sites (actually take a random sample of 10 milion) in the genome and classify them:
+
+```{r}
+all_TA_sites <- vmatchPattern("TA", BSgenome.Mmusculus.UCSC.mm10)
+
+all_TA_sites_std <-  keepStandardChromosomes(all_TA_sites, pruning.mode = 'coarse')
+length(all_TA_sites_std)
+
+#subsample 10 million TA sites
+set.seed(20260409)
+sample_TA_sites  = sample(all_TA_sites_std[strand(all_TA_sites_std) =="+" & seqnames(all_TA_sites_std) != "chrM"], #count each TA once & remove M chromosome
+                          10E6, replace =F)
+
+# Keep only TA with full ±3 context (avoid chromosome edges)
+valid <- start(sample_TA_sites) > 3 & end(sample_TA_sites) <= seqlengths(BSgenome.Mmusculus.UCSC.mm10)[as.character(seqnames(sample_TA_sites))] - 3
+
+sample_TA_sites <- sample_TA_sites[valid]
+
+# Get sequences
+contexts_TA <- getSeq(
+  BSgenome.Mmusculus.UCSC.mm10,
+  names = seqnames(sample_TA_sites),
+  start = start(sample_TA_sites) - 3,
+  end   = end(sample_TA_sites) + 3
+)
+
+# Classify surrounding sequences
+ctx_char <- as.character(contexts_TA)
+left_base  <- substr(ctx_char, 1, 1)
+right_base <- substr(ctx_char, 8, 8)
+
+category <- character(length(ctx_char))
+category[left_base != "A" & right_base != "T"] <- "BNNTANNV"
+category[left_base != "A" & right_base == "T"] <- "BNNTANNT"
+category[left_base == "A" & right_base != "T"] <- "ANNTANNV"
+category[left_base == "A" & right_base == "T"] <- "ANNTANNT"
+
+table(category)
+sum(category== "ANNTANNT")/length(category)
+sum(category== "ANNTANNV")/length(category)
+sum(category== "BNNTANNT")/length(category)
+sum(category== "BNNTANNV")/length(category)
+
+
+```

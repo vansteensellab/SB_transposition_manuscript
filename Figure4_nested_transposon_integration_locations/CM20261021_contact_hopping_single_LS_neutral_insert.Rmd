@@ -1,0 +1,285 @@
+---
+title: "CM20260401_contact_hopping_single_LPs"
+output: html_document
+date: "2026-04-01"
+---
+
+#Goal
+We found that in the nested transposon data there is pretty consistent scaling factor between contact and fraction of integrations.
+Here I want to test whether that holds true for the neutral insert hopping data from the single LPs.
+
+# Setup
+##Libraries
+Load the libraries and set the parameters.
+```{r load_libraries}
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(gtools)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggh4x)
+library(stringr)
+library(readr)
+library(knitr)
+library(cowplot)
+library(ggpubr)
+
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(Biostrings)
+library(ggseqlogo)
+library(ShortRead)
+library(GENOVA)
+library(GGally)
+
+library(ggbeeswarm)
+library(scales)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+
+source('/home/c.moene/projects/hopping_technology/01_genomewide_chromatin_background/CM20260330_compute_chromatin_background.R')
+```
+
+## Paths & parameters
+```{r paths_parameters}
+
+#datatag
+datetag = paste0("CM",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/home/c.moene/projects/hopping_technology/05_hopping_distribution_single_LPs/analysis_",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+```
+
+```{r knits setup}
+
+library(knitr)
+opts_chunk$set(cache = T,
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               dpi = 300,
+               fig.path = paste0(file.path(output_dir), "/contact/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+```{r}
+#cutoff to call an integration local
+distance_local_hop = 2E6
+```
+
+
+# Load data
+All single LP integration data was collected in /home/c.moene/projects/hopping_technology/05_hopping_distribution_single_LPs/CM20260401_collect_mapped_ints_single_LPs.Rmd
+Load them here
+```{r}
+all_ints_comb = read_tsv( "~/projects/hopping_technology/SB_transposition_manuscript/Figure5_integration_locations_cargo/CM20260104_collected_mapped_ints_all.tsv")
+
+all_ints_comb = all_ints_comb %>%
+  mutate(type = replace_na(type,'pool')) 
+
+```
+
+
+Some statistics.
+```{r}
+table(all_ints_comb$insert, useNA = 'ifany')
+
+all_ints_comb %>% 
+  filter(insert == "minimal insert") %>%
+  group_by(LP, type)%>%
+  summarise(n())
+
+all_ints_comb %>%
+  filter(type == "pool") %>%
+  nrow()
+```
+In total 81K inserts in pools. 
+
+## Collect LPs 
+```{r}
+all_single_LP = all_ints_comb %>%
+  filter(type == "pool") %>%
+  dplyr::select(LP_chr, LP_coordinate, LP) %>%
+  distinct() %>%
+  dplyr::rename(chr = LP_chr, start = LP_coordinate) %>%
+  mutate(end = start + 1)
+  
+```
+
+
+
+# Create virtual 4C
+Try to re-run the virtual 4Cs on all the single LPs.
+
+## 25 kb bins
+25kb bins
+```{r}
+# .hic file
+exp <- "/DATA/usr/m.eder/Tracks/microC/GSE130275_mESC_WT_combined_2.6B.hic"
+# 
+# # # # load into genova - this takes some time for high resolutions
+# microC_mESC_25kb <- load_contacts(signal_path = exp,
+#                       sample_name = "WT",
+#                       resolution = 25e3)
+# 
+# 
+# # compute virtual 4C for each PB LP
+# tib_LPs_gr = all_single_LP %>%
+#   mutate(chr = str_remove(chr, "chr")) %>%
+#   GRanges()
+# 
+# virt_4C_singleLP_ls_25kb = lapply(1:length(tib_LPs_gr), function(i){
+#   contacts_obj = virtual_4C(microC_mESC_25kb,  tib_LPs_gr[i],
+#                              xlim = c(2E6, 2E6))
+#   contacts_obj$data  %>%
+#     as_tibble() %>%
+#     mutate(LP = tib_LPs_gr$LP[i])
+# })
+# saveRDS(virt_4C_singleLP_ls_25kb, "/home/c.moene/projects/hopping_technology/05_hopping_distribution_single_LPs/rds/CM20260402_virt4C_per_LP_25kb.rds")
+
+virt_4C_singleLP_ls_25kb = readRDS("/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Figure4_nested_transposon_integration_locations/CM20260402_virt4C_per_LP_25kb.rds")
+
+virt_4C_tib_25kb = bind_rows(virt_4C_singleLP_ls_25kb)
+
+virt_4C_tib_25kb_sel = virt_4C_tib_25kb %>%
+  dplyr::rename(mid_bin = mid,
+                contact = WT) %>%
+  mutate(binwidth = 25000) %>%
+  mutate(start_bin = mid_bin - binwidth/2,
+         end_bin = mid_bin + binwidth/2,
+         ) 
+
+```
+
+# Neutral inserts
+```{r}
+neutral_insert_local_ints = all_ints_comb %>%
+  dplyr::filter(insert_name %in% c("LoxP", "CRE6") &
+                  LP %in% c("N1", "-116 kb")&
+                  type == "pool") %>%
+  mutate(hopped = start != LP_coordinate,
+         dist_to_LP = case_when(chr == LP_chr ~ start - LP_coordinate,
+                                .default = NA),
+         local_hop = abs(dist_to_LP) < distance_local_hop & !is.na(dist_to_LP) & hopped) %>% #dont include unhopped ints 
+  dplyr::filter(local_hop)
+
+ table(neutral_insert_local_ints$LP, neutral_insert_local_ints$experiment, useNA = 'ifany')
+```
+Two bioreps for -116kb CRE.
+Two bioreps for N1 LoxP, but the old one (E1682) only has 65 local ints, so not really useable.
+Just combine all experiments per LP
+
+## 25kb bin size
+Need to 'fill in' all the bins that have 0 contact. The 4C bins are on round numbers of 5000. So I need to start by finding the bin border close to the LP.
+Then make a tibble with all possible bins +-2Mb from LP
+
+```{r}
+all_bin_borders_tib_25kb = all_single_LP %>%
+  mutate(binwidth = 25000) %>%
+  mutate(bin_border_at_LP = floor(start/binwidth)*binwidth,
+         first_bin_border = bin_border_at_LP-2E6,
+         last_bin_border =  bin_border_at_LP+2E6 + binwidth) %>%
+  rowwise() %>%
+  mutate(bin = list(seq(first_bin_border, last_bin_border, by = binwidth))) %>%
+  unnest(bin) %>%
+  ungroup() %>%
+  dplyr::rename(start_bin = bin) %>%
+  mutate(end_bin = start_bin + binwidth,
+         mid_bin = start_bin + binwidth/2,
+         dist_from_LP = mid_bin - start,
+         chromosome = str_remove(chr, "chr"))
+
+all_bin_borders_tib_ls_25kb = all_bin_borders_tib_25kb %>%
+  group_by(LP) %>%
+  group_split()
+
+
+names(all_bin_borders_tib_ls_25kb) = group_keys(group_by(all_bin_borders_tib_25kb, LP) )$LP
+  
+```
+
+Link to SB counts
+```{r}
+
+SB_ints_by_contact_ls_25kb = lapply(c("-116 kb", "N1"), function(lp){
+  intervals_4c_tib =  all_bin_borders_tib_ls_25kb[[lp]] %>%
+    mutate(rownr = row_number())
+  
+  intervals_4c = intervals_4c_tib %>%
+    select(chr, start_bin, end_bin, LP) %>%
+    dplyr::rename(start = start_bin, end = end_bin) %>%
+    GRanges()
+  
+  ints_in_cl = neutral_insert_local_ints %>% 
+    uncount(read_count) %>% #count individual reads instead of integrations!
+    filter(LP == lp) %>%
+    select(chr, start, end) %>%
+    GRanges()
+  
+  N_SB_ints_per_interval = findOverlaps(intervals_4c, ints_in_cl, ignore.strand = T) %>%
+    as_tibble() %>%
+    group_by(queryHits) %>%
+    summarize(N_SB_reads = n())
+  
+  intervals_4c_tib %>%
+    left_join(N_SB_ints_per_interval, join_by(rownr == queryHits)) %>%
+    mutate(N_SB_reads = replace_na(N_SB_reads, 0))
+})
+
+#make one tibble and calculate fraction of ints
+SB_ints_by_contact_tib_25kb = bind_rows(SB_ints_by_contact_ls_25kb) %>%
+  left_join(virt_4C_tib_25kb_sel) %>%
+  mutate(contact = na.replace(contact, 0)) %>%
+  group_by(LP) %>%
+  mutate(SB_reads_total = sum(N_SB_reads),
+         fract_SB_reads = N_SB_reads / SB_reads_total
+         )
+```
+
+## plot
+```{r 4FG_contact_ints_neutral_insert}
+SB_ints_by_contact_tib_25kb %>%
+  mutate(dist_from_LP = abs(mid_bin - start)) %>%
+  filter(contact > 0 & N_SB_reads> 0 & dist_from_LP ) %>%
+  ggplot(aes(x = contact , y = fract_SB_reads)) +
+  facet_wrap( ~ LP) +
+  stat_cor(label.y.npc = 'top', vjust = 1, method = 'spearman') +
+  geom_point(alpha = 0.5, stroke = NA)+
+  geom_smooth(method = 'lm') +
+  stat_regline_equation(label.y.npc = 0.8)+
+  scale_x_log10()+
+  scale_y_log10()+ 
+  theme_bw() +
+  theme(legend.position =  'none',
+        aspect.ratio = 1)
+  
+
+```
+
+Calculate slopes more exactly
+```{r}
+SB_ints_by_contact_tib_25kb_norm = SB_ints_by_contact_tib_25kb %>%
+  filter(contact > 0 & fract_SB_reads > 0 ) %>%
+  mutate(log10_fract_reads = log10(fract_SB_reads),
+         log10_contact = log10(contact))
+
+contact_slope_tib = SB_ints_by_contact_tib_25kb_norm %>%
+  group_by(LP) %>%
+  summarize(slope = lm(log10_fract_reads ~ log10_contact)$coefficients['log10_contact'],
+            intercept = lm(log10_fract_reads ~ log10_contact)$coefficients['(Intercept)'],
+            pearson_cor = cor.test(log10_fract_reads, log10_contact, method = 'pearson')$estimate,
+            pearson_pval = cor.test(log10_fract_reads, log10_contact, method = 'pearson')$p.val) 
+
+contact_slope_tib
+```
+Slopes are 0.84 (-116 kb) and 0.76 (N1).
+
+

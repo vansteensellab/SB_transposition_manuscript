@@ -1,0 +1,582 @@
+---
+title: "CM20261020_Omar_pools_hopping_efficiency_chromatin"
+output: html_document
+date: "2026-03-30"
+---
+# Goal
+Take the hopping efficiencies calculated in /home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Figure2_nested_transposon_hopping_efficiency/CM20260730_process_data_Omar_hopping_2reps.Rmd and correlate them with the chromatin context at the LP location.
+
+Use the genomewide background chromatin data (processed in /home/c.moene/projects/hopping_technology/01_genomewide_chromatin_background/CM20260330_process_background_data.Rmd) to get relative chromatin context. 
+
+# Setup
+##Libraries
+Load the libraries and set the parameters.
+```{r load_libraries}
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(gtools)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggh4x)
+library(stringr)
+library(readr)
+library(knitr)
+library(cowplot)
+library(ggpubr)
+
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(Biostrings)
+library(ggseqlogo)
+library(ShortRead)
+library(GENOVA)
+library(GGally)
+
+library(ggbeeswarm)
+library(scales)
+library(RColorBrewer)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+
+source('/home/c.moene/projects/hopping_technology/01_genomewide_chromatin_background/CM20260330_compute_chromatin_background.R')
+```
+
+
+## Paths & parameters
+```{r paths_parameters}
+
+#datatag
+datetag = paste0("CM",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/home/c.moene/projects/hopping_technology/02_Omar_clone_pools/analysis_",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+```
+
+```{r knits setup}
+
+library(knitr)
+opts_chunk$set(cache = F, #script loads large files, cache cannot handle this
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               dpi = 300,
+               fig.path = paste0(file.path(output_dir), "/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+```{r}
+#cutoff to call an integration local
+distance_local_hop = 2E6
+```
+
+# Load data
+```{r}
+#load the background processed tibble
+genomic_background_comb = readRDS('/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Chromatin_context/CM20260730_summary_stats_chrom_background.rds')
+
+#load the encode blacklist regions
+blacklist_bed = read_tsv('/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Chromatin_context/encode_mm10_blacklist.v2.bed', col_names = c("chr", "start", "end", "type"))
+
+```
+
+
+## process PB background data
+```{r}
+#location of the pipeline output files
+path_context_500_PB = '/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Chromatin_context/CM20260310_local_context/coverage_results/Omar_PB-500_summary.txt'
+path_context_2000_PB = '/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Chromatin_context/CM20260310_local_context/coverage_results/Omar_PB-2000_summary.txt'
+path_context_5000_PB = '/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Chromatin_context/CM20260310_local_context/coverage_results/Omar_PB-5000_summary.txt'
+path_context_10000_PB = '/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Chromatin_context/CM20260310_local_context/coverage_results/Omar_PB-10000_summary.txt'
+
+#features we want to process
+features_oi = c("'H3K9me3_pADam'",  "'LB1_pADam'" , #heterochromatin
+                "'EZH2'", "'H3K27me3-2i'", #polycomb
+                "'RAD21'" , "'CTCF'", #3D genome
+                "'H3K27ac-2i'", "'p300-2i'", #euchromatin
+                "'ATAC'", "'DNase'", #accessibility
+                "'H3K36me3'", "'POLR2A'", "'TTseq_fw'", "'TTseq_rv'", #transcription
+                "'MED1'", "'H3K4me1'", "'H3K4me3'", #CRE
+                "'input_1'", "'input_2'" #input samples
+                )
+
+#load the tibbles
+PB_tib_oi_500 = read_tsv(path_context_500_PB) %>%
+  dplyr::select(any_of(c("#'chr'","'start'","'end'" , features_oi)))
+PB_tib_oi_2000 = read_tsv(path_context_2000_PB) %>%
+  dplyr::select(any_of(c("#'chr'","'start'","'end'" , features_oi)))
+PB_tib_oi_5000 = read_tsv(path_context_5000_PB) %>%
+  dplyr::select(any_of(c("#'chr'","'start'","'end'" , features_oi)))
+PB_tib_oi_10000 = read_tsv(path_context_10000_PB) %>%
+  dplyr::select(any_of(c("#'chr'","'start'","'end'" , features_oi)))
+
+#process the chromatin signal at the insertion sites
+chrom_PB_500 = chrom_insert_sites(PB_tib_oi_500,
+                                   filter(genomic_background_comb, window_size == '500'), #load properly
+                                   blacklist_bed,
+                                       log_features = c("LB1_pADam", "H3K9me3_pADam"), 
+                                       non_cistrome_features = c("TTseq_fw", "TTseq_rv"),
+                                       input_cols = c("input_1", "input_2")     
+)
+chrom_PB_2000 = chrom_insert_sites(PB_tib_oi_2000,
+                                   filter(genomic_background_comb, window_size == '2000'), #load properly
+                                   blacklist_bed,
+                                       log_features = c("LB1_pADam", "H3K9me3_pADam"), 
+                                       non_cistrome_features = c("TTseq_fw", "TTseq_rv"),
+                                       input_cols = c("input_1", "input_2")     
+)
+
+chrom_PB_5000 = chrom_insert_sites(PB_tib_oi_5000,
+                                   filter(genomic_background_comb, window_size == '5000'), #load properly
+                                   blacklist_bed,
+                                       log_features = c("LB1_pADam", "H3K9me3_pADam"), 
+                                       non_cistrome_features = c("TTseq_fw", "TTseq_rv"),
+                                       input_cols = c("input_1", "input_2")     
+)
+chrom_PB_10000 = chrom_insert_sites(PB_tib_oi_10000,
+                                   filter(genomic_background_comb, window_size == '10000'), #load properly
+                                   blacklist_bed,
+                                       log_features = c("LB1_pADam", "H3K9me3_pADam"), 
+                                       non_cistrome_features = c("TTseq_fw", "TTseq_rv"),
+                                       input_cols = c("input_1", "input_2")     
+)
+
+chrom_PB_comb = bind_rows(chrom_PB_500, chrom_PB_2000, chrom_PB_5000, chrom_PB_10000) |>
+  dplyr::rename(start_interval = start, end_interval = end)|>
+   mutate(start = start_interval + as.numeric(window_size)/2) #actual LP location is 1/2 window size after start window
+
+# saveRDS(chrom_PB_comb, "/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Chromatin_context/CM20260331_chrom_context_PB_ints.rds")
+```
+
+
+# Load hopping efficiency
+Add the hopping efficiency data from the three replicates
+```{r}
+SB_ints_per_PB_rep = readRDS("/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Figure2_nested_transposon_hopping_efficiency/CM20260330_SB_ints_per_PB_2reps.rds")
+
+SB_ints_per_PB_comb = SB_ints_per_PB_rep %>%
+  group_by(parental_clone, chr, start, end, nearest_parental_idx, LP_name) %>% 
+  summarize(N_local_SB_ints = sum(N_local_SB_ints),
+            # mean_dist = mean(mean_dist),
+            # median_dist = mean(median_dist),
+            # N_within_10kb = sum(N_within_10kb),
+            rel_SB_ints_parental = mean(rel_SB_ints_parental))
+
+PB_context_tib_filt_hopef = left_join(chrom_PB_comb, SB_ints_per_PB_comb) %>%
+  filter(removal == "keep" & 
+           !is.na(LP_name)) %>% #there is one old, wrong PB location in the chromatin data that is not in the hopping data, remove it here
+  mutate(LP_nr = paste0(parental_clone, "_", nearest_parental_idx))
+
+
+```
+
+Do we remove PBs because of the encode blacklist?
+```{r}
+PB_bins_gr = chrom_PB_comb %>% 
+  filter(window_size == 2000) %>%
+  dplyr::select(chr, start_interval , end_interval ) %>%
+  dplyr::rename(start = start_interval, end = end_interval) %>%
+  distinct() %>%
+  GRanges()
+
+
+findOverlaps(GRanges(blacklist_bed), GRanges(PB_bins_gr))
+
+PB_bins_gr[5]
+chrom_PB_comb %>% filter(chr == "chr12" & start_interval == 114942520) %>% 
+  filter(feature %in% c("input_1", "input_2")) %>%
+  mutate(remove_for_input = signal_log2 <cutoff_min | signal_log2 > cutoff_max)
+
+GRanges(blacklist_bed)[646]
+
+```
+there is one PB removed that is on the blacklist, but this would already be removed based on our comparison to input (too low signal in input1 and input2)
+
+
+## make heatmap
+Get overlaps with bed file features (protein-coding genes)
+```{r}
+
+PB_gene_overlap = read_tsv('/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Chromatin_context/CM20260310_local_context/feature_results/overlap_Omar_PB_genes.txt',
+                          col_names = c('chr_PB', 'start_PB', 'end_PB', 'LP_name', 'chr_gene', 'source', 'feature_type', 'start_gene', 'end_gene', 'X10', 'strand_gene','X12', 'gene_details', 'X14'))
+
+PB_gene_overlap_protcoding = PB_gene_overlap %>%
+  filter(grepl('gene_type=protein_coding', gene_details))
+
+PB_gene_overlap_protcoding_forjoin = PB_gene_overlap_protcoding %>%
+  dplyr::select(LP_name, chr_gene, start_gene, end_gene)
+
+PB_context_feature_tib = PB_context_tib_filt_hopef %>%
+  filter(window_size == 2000) %>%
+  mutate(LP_name = paste0(parental_clone, "_", chr, "_", start)) %>%
+  select(LP_nr, LP_name, chr, start_interval, end_interval, parental_clone) %>%
+  distinct() %>%
+  left_join(PB_gene_overlap_protcoding_forjoin) %>%
+  mutate(genebody = !is.na(chr_gene))
+
+PB_context_feature_df = PB_context_feature_tib %>%
+  dplyr::select(LP_name,parental_clone, genebody) %>%
+  column_to_rownames(var = "LP_name") %>%
+  data.frame()
+```
+
+
+make wide matrix
+```{r}
+relevant_features = c(
+  "H3K9me3_pADam", "LB1_pADam",
+  "EZH2", "H3K27me3_2i",
+  "CTCF", "RAD21",
+  "H3K27ac_2i", "p300_2i",
+  "DNase", "ATAC",
+  "H3K36me3", "POLR2A", "TTseq_total",
+  "MED1", "H3K4me1","H3K4me3")
+
+PB_covs_2000_rel_maps_tibs = PB_context_tib_filt_hopef %>%
+  filter(window_size == 2000) %>%
+  dplyr::filter(feature %in% relevant_features) %>%
+  dplyr::select(chr, start_interval, end_interval, start, LP_name, feature, zscore) %>%
+  pivot_wider(names_from = feature, values_from = zscore)
+
+PB_covs_2000_rel_heatmap_matrix = PB_covs_2000_rel_maps_tibs %>% 
+  dplyr::select(-c(chr, start_interval, end_interval, start)) %>%
+  column_to_rownames(var = "LP_name") %>%
+  as.matrix()
+
+
+
+```
+actually make the heatmap
+```{r 2D_heatmap_PB_LPs, fig.width  = 10}
+#annotation colors
+ann_colors <- list(
+  parental_clone = setNames(
+    brewer.pal(8, "Dark2")[4:6],
+    unique(PB_context_feature_df$parental_clone)
+  ),
+  genebody = setNames(
+    brewer.pal(8, "Dark2")[1:2],
+    unique(PB_context_feature_df$genebody)
+  )
+)
+
+ComplexHeatmap::pheatmap(
+  PB_covs_2000_rel_heatmap_matrix,
+  scale = "none",                 # IMPORTANT: no additional scaling
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  color = colorRampPalette(rev(brewer.pal(n = 11, name="RdBu")))(100),
+  breaks = seq(-4, 4, length.out = 101),
+  annotation_row = PB_context_feature_df,
+  annotation_colors = ann_colors,
+  clustering_distance_rows = 'correlation',
+  clustering_distance_cols = 'correlation'
+  )
+
+```
+
+
+##heatmap with barplot
+I want to add a barplot on the side of the heatmap, this cannot easily be done within pheatmap and converting to a real complex heatmap is a mess (because of the NA values).
+Instead, I will extract the row ordering from the heatmap and make the barplot separately
+
+```{r}
+ph = ComplexHeatmap::pheatmap(
+  PB_covs_2000_rel_heatmap_matrix,
+  scale = "none",                 # IMPORTANT: no additional scaling
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  color = colorRampPalette(rev(brewer.pal(n = 11, name="RdBu")))(100),
+  breaks = seq(-4, 4, length.out = 101),
+  annotation_row = PB_context_feature_df,
+  annotation_colors = ann_colors,
+  clustering_distance_rows = 'correlation',
+  clustering_distance_cols = 'correlation'
+  )
+
+ph = ComplexHeatmap::draw(ph)
+
+order_of_clones = rownames(PB_covs_2000_rel_heatmap_matrix)[ComplexHeatmap::row_order(ph)]
+
+
+```
+
+```{r 2E_barplot_with_heatmap_PB_LPs, fig.width  = 4}
+SB_ints_per_PB_comb %>% 
+  filter(LP_name %in% order_of_clones) %>%
+  mutate(LP_name_ordered = factor(LP_name, levels = rev(order_of_clones))) %>%
+  ggplot(aes(y = LP_name_ordered, x = rel_SB_ints_parental)) +
+  geom_col() +
+  scale_y_discrete()+
+  scale_x_continuous(limits = c(0,2), expand = c(0,0)) +
+  theme_bw() 
+
+```
+
+## distribution features genome
+Make a supplementary figure panel that shows our integrations are biased towards open chromatin, compared to random genome-wide bins.
+
+Process the background data to get zscores for each background bin
+```{r}
+path_context_2000 = '/DATA/shared/projects/local_hopping/hopping_technology/01_genomewide_chromatin_context/CM20260310_local_context/coverage_results/genomewide_background-2000_summary.txt'
+
+#features we want to process
+features_oi = c( "'H3K9me3_pADam'",  "'LB1_pADam'" , #heterochromatin
+                "'EZH2'", "'H3K27me3-2i'", #polycomb
+                "'RAD21'" , "'CTCF'", #3D genome
+                "'H3K27ac-2i'", "'p300-2i'", #euchromatin
+                "'ATAC'", "'DNase'", #accessibility
+                "'H3K36me3'", "'POLR2A'", "'TTseq_fw'", "'TTseq_rv'", #transcription
+                "'MED1'", "'H3K4me1'", "'H3K4me3'", #CRE
+                "'input_1'", "'input_2'" #input samples
+                )
+
+#load the tibbles
+context_tib_oi_2000 = read_tsv(path_context_2000) %>%
+  dplyr::select(any_of(c("#'chr'","'start'","'end'" , features_oi)))
+
+chrom_background_2000 = chrom_insert_sites(context_tib_oi_2000,
+                                   filter(genomic_background_comb, window_size == '2000'), #load properly
+                                   blacklist_bed,
+                                       log_features = c("LB1_pADam", "H3K9me3_pADam"), 
+                                       non_cistrome_features = c("TTseq_fw", "TTseq_rv"),
+                                       input_cols = c("input_1", "input_2"))     
+```
+
+
+```{r S2X_PB_chromatin_compared_to_genome}
+PB_chrom_for_plot = chrom_PB_comb %>%
+  mutate(type = "PB") %>%
+  filter(removal == 'keep') %>%
+  filter(!feature %in% c("TTseq_fw", "TTseq_rv", "input_1", "input_2")) #input is interesting, they overlap nicely, not needed for manuscript fig
+
+colscale_density_plot = scale_colour_manual(values = c(background = 'grey', PB = 'orange'), aesthetics = c('col', 'fill'))
+
+chrom_background_2000 %>%
+  mutate(type = 'background') %>%
+  bind_rows(PB_chrom_for_plot) %>%
+  filter(removal == 'keep') %>%
+  filter(!feature %in% c("TTseq_fw", "TTseq_rv", "input_1", "input_2")) %>%
+  ggplot(aes(x = zscore, col = type, fill = type)) +
+  facet_wrap(~feature) +
+  geom_density(adjust = 2, alpha = 0.3) +
+  geom_rug(data = PB_chrom_for_plot) + 
+  theme_bw() + 
+  scale_x_continuous(limits = c(-8,8)) +
+  colscale_density_plot
+```
+
+
+# Correlation chromatin - hop
+
+```{r S2X_correlation_hopef_all_features, fig.width = 8}
+#get max range of zscores, to use the same plot interval on our other LPs later
+PB_context_tib_filt_hopef %>%
+  filter(window_size == 2000) %>%
+  dplyr::filter(feature %in% relevant_features) %>% 
+  pull(zscore) %>% summary()
+
+#just one nice plot for supplement
+PB_context_tib_filt_hopef %>%
+  filter(window_size == 2000) %>%
+  dplyr::filter(feature %in% relevant_features) %>%
+  ggplot(aes(x = zscore, y = rel_SB_ints_parental)) + 
+  facet_wrap(~feature) +
+  scale_x_continuous(limits = c(-4, 6), expand = c(0,0)) +
+  geom_point(size = 1) +
+ stat_cor(label.y = 1.8, size =3, method = 'pearson')+
+  geom_smooth(method = 'lm')+
+  theme_bw() +
+  theme(aspect.ratio = 0.5)
+
+```
+
+
+## Summary correlations
+Only for 2kb windows
+```{r 2E_pearson_correlation_all_features_2kb, fig.width = 5}
+PB_context_2000_tib_filt_hopef = PB_context_tib_filt_hopef %>%
+  filter(window_size == 2000) %>%
+  dplyr::filter(feature %in% relevant_features) 
+
+cor_hop_eff_ls = lapply(relevant_features, function(fi){
+  data_feature_oi = filter(PB_context_2000_tib_filt_hopef, feature == fi)
+  test = cor.test(data_feature_oi$rel_SB_ints_parental,
+                  data_feature_oi$zscore)
+  tibble(factor = fi, cor = test$estimate, pval = test$p.value)
+})
+cor_hop_eff = bind_rows(cor_hop_eff_ls)
+
+cor_hop_eff %>%
+  ggplot(aes(x = cor, y = reorder(factor, -cor), fill = pval <= 0.01)) +
+  geom_col() +
+  scale_x_continuous(limits = c(-0.75, 0.75),
+                     breaks = scales::pretty_breaks(n = 6)) +
+  theme_bw() +
+  xlab('pearson correlation')+
+  ylab('chromatin feature')
+```
+
+For all window sizes
+
+```{r 2E_pearson_correlation_all_features_all_windowsizes, fig.width = 5}
+# relevant_features2 = relevant_features[!relevant_features=="TTseq_total"]
+
+cor_hop_eff_ls_ws = lapply(c(500,2000,5000,10000),function(ws){
+  lapply(relevant_features, function(fi){
+    
+    data_feature_oi = filter(PB_context_tib_filt_hopef, feature == fi & 
+                               window_size == ws)
+    test = cor.test(data_feature_oi$rel_SB_ints_parental,
+                    data_feature_oi$zscore)
+    tibble(factor = fi, cor = test$estimate, pval = test$p.value, window_size = ws)
+  } )
+})
+
+cor_hop_eff_ws = bind_rows(bind_rows(cor_hop_eff_ls_ws))
+
+cor_hop_eff_ws %>%
+  mutate(window_size = factor(window_size)) %>%
+  ggplot(aes(x = cor, y = reorder(factor, -cor), fill = window_size)) +
+  geom_col(position = position_dodge()) +
+  scale_x_continuous(limits = c(-0.75, 0.75),
+                     breaks = scales::pretty_breaks(n = 6)) +
+  theme_bw() +
+  xlab('pearson correlation')+
+  ylab('chromatin feature')
+
+
+```
+Different window sizes are similar, except the 500bp (so 250bp either direct), that is too small to see the effects. Here of course the 10kb window includes the 2kb window as well. But it doesn't seem like the effect gets diluted / noise gets added, which suggests signals a bit further away from the LP might still influence the hopping.
+
+show significance separately, so I can add it to the plots. 
+```{r}
+cor_hop_eff_ws %>%
+  mutate(window_size = factor(window_size)) %>%
+  ggplot(aes(x = cor, y = reorder(factor, -cor), col = window_size, fill = pval<=0.01)) +
+  geom_col(position = position_dodge()) +
+  scale_x_continuous(limits = c(-0.75, 0.75),
+                     breaks = scales::pretty_breaks(n = 6)) +
+  theme_bw() +
+  xlab('pearson correlation')+
+  ylab('chromatin feature')
+
+
+```
+manually combine color for window size and significance in illustrator
+
+
+## Example correlations
+
+
+
+```{r 2F_example_cor_ATAC, fig.width=4}
+PB_context_tib_filt_hopef %>%
+  filter(window_size == 2000) %>%
+  dplyr::filter(feature == "ATAC") %>%
+  ggplot(aes(x = zscore, y = rel_SB_ints_parental)) + 
+  facet_wrap(~feature) +
+  geom_point() +
+ stat_cor(label.y = 1.8)+
+  geom_smooth(method = 'lm')+
+  theme_bw() +
+  xlab("ATAC ChIP") +
+  ylab("relative number SB insertions") +
+  theme(aspect.ratio = 0.5)
+```
+
+
+```{r 2G_example_cor_H3K9me3, fig.width = 4}
+PB_context_tib_filt_hopef %>%
+  filter(window_size == 2000) %>%
+  dplyr::filter(feature == "H3K9me3_pADam") %>%
+  ggplot(aes(x = zscore, y = rel_SB_ints_parental)) + 
+  facet_wrap(~feature) +
+  geom_point() +
+ stat_cor(label.y = 1.8)+
+  geom_smooth(method = 'lm')+
+  theme_bw() +
+  xlab("H3K9me3 pA-DamID") +
+  ylab("relative number SB insertions")+
+  theme(aspect.ratio = 0.5)
+```
+
+```{r S2X_TTseq_boxplot, fig.width = 4}
+PB_context_tib_filt_hopef %>%
+  filter(window_size == 2000) %>%
+  dplyr::filter(feature == "TTseq_total") %>%
+  mutate(TTseq_signal_present = !is.na(zscore)) %>%
+  ggplot(aes(x = TTseq_signal_present, y = rel_SB_ints_parental)) + 
+    geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.3, height = 0) +
+  stat_compare_means()+
+  theme_bw() +
+  xlab("any TTseq signal") +
+  ylab("relative number SB insertions") +
+  theme(aspect.ratio = 1)
+```
+
+```{R S2X_TTseq_signal_correlation, fig.width = 4}
+PB_context_tib_filt_hopef %>%
+  filter(window_size == 2000) %>%
+  dplyr::filter(feature == "TTseq_total" & !is.na(zscore)) %>%
+  ggplot(aes(x = zscore, y = rel_SB_ints_parental)) + 
+  facet_wrap(~feature) +
+  geom_point() +
+ stat_cor(label.y = 1.8)+
+  geom_smooth(method = 'lm')+
+  theme_bw() +
+  xlab("TTseq signal") +
+  ylab("relative number SB insertions")+
+  theme(aspect.ratio = 0.5)
+```
+
+
+## Correlation after subsetting
+There are two extra correlations we want to show: TTseq and POLR2A after correcting for cCREs
+
+```{r}
+PB_DNase_nearest = read_tsv('/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Chromatin_context/CM20260310_local_context/feature_results/nearest_Omar_PB_DNase.txt',
+                          col_names = c('chr_PB', 'start_PB', 'end_PB', 'LP_name', 'chr_peak', 'start_peak', 'end_peak',paste0("X", 8:10), 'score',paste0("X", 12:14), "distance"))
+
+PB_DNase_nearest_forjoin = PB_DNase_nearest %>%
+  dplyr::select(LP_name, chr_peak, distance) %>%
+  dplyr::rename(distance_to_peak = distance) %>%
+  distinct()
+
+PB_context_feature_tib_DNase = PB_context_tib_filt_hopef %>%
+  filter(window_size == 2000) %>%
+  select(LP_nr, LP_name, chr, start_interval, end_interval, parental_clone) %>%
+  distinct() %>%
+  left_join(PB_DNase_nearest_forjoin) %>%
+  mutate(DNase_peak = distance_to_peak < 2000) #NB this is a bigger window than the ChIP bw quantification
+
+
+```
+
+```{r S2X_correlation_transcription_by_DNase_peak}
+PB_context_tib_filt_hopef %>%
+  filter(window_size == 2000) %>%
+  dplyr::filter(feature %in% c("TTseq_total", "POLR2A")) %>%
+  left_join(PB_context_feature_tib_DNase) %>%
+  ggplot(aes(x = zscore, y = rel_SB_ints_parental)) + 
+  facet_grid(DNase_peak ~ feature, scales = 'free_x') +
+  geom_point() +
+  stat_cor( label.y = 1.8)+
+  geom_smooth(method = 'lm')+
+  theme_bw() +
+  ylab("relative number SB insertions")
+
+```
+check the high TTseq, no DNase integrations

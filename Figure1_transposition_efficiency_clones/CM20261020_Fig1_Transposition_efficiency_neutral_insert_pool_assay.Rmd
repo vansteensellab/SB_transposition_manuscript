@@ -1,0 +1,660 @@
+---
+title: "CM20261020_Hopping_eff_based_on_single_LPs"
+author: "Christine"
+date: "2026-10-20"
+output: 
+  html_document:
+    theme: journal #cerulean
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+  editor_options:
+    chunk_output_type: console
+---
+
+
+#Aim 
+The aim is to look for differences in hopping efficiency based on different genomic locations of the launch pad's (LPs). We have multiple options to tackle this. In this analysis I am focusing on the single integration launch pads. The prerequisite is that the comparisons are between LPs with the same insert. 
+Hopping efficiency has been determined by the number of parsed reads that map to the home location or not, resulting in fractions of home or hopped. 
+
+We ran Christines pipeline to estimate the hopped fraction, the final output tsv files can be found here:
+/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Transposed_fraction/output_ME20260326
+
+Here we only process the files with a neutral insert (for figure 1). The other inserts are processed in figure 3.
+
+#workfow
+- load the tsv files into R
+- plot LP versus hopping efficiency
+
+#Setup
+```{r}
+library(stringr)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(ggplot2)
+library(Biostrings)
+library(GenomicRanges)
+library(tibble)
+library(RColorBrewer)
+library(ggpubr)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+source('/home/c.moene/projects/hopping_technology/01_genomewide_chromatin_background/CM20260330_compute_chromatin_background.R')
+
+```
+
+
+#Paths and parameters
+```{r}
+#datatag
+datetag = paste0("CM",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/home/c.moene/projects/hopping_technology/03_hopping_eff_single_LPs/figures/",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+```
+
+```{r}
+library(knitr)
+opts_chunk$set(cache = T,
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               dpi = 300,
+               fig.path = paste0(file.path(output_dir), "/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+
+# Combine all output files
+```{r}
+# List all files
+metadata <- tibble(file = dir('/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Transposed_fraction/output_ME20260326', 
+                   recursive = T, full.names = T)) %>%
+  mutate(sample = str_remove(basename(file), "\\..*"))
+
+
+# Load all files
+hopping_eff_tib <- bind_rows(lapply(1:nrow(metadata),
+                        function(i) {
+                          tmp <- read_tsv(metadata$file[i],
+                                          col_types = cols(
+                                            .default = col_character(),
+                                            total_reads  = col_double(),
+                                            home_reads  = col_double(),
+                                            fract_home_reads = col_double())) %>%
+                            mutate(sample = metadata$sample[i])
+                        }))
+
+hopping_eff_tib = hopping_eff_tib %>%
+  mutate(orientation = case_when(grepl("Fw|fw", sample_name) ~ "fw",
+                                 grepl("Rv|rv", sample_name) ~ "rv",
+                                 .default = 'unknown'))
+
+```
+
+
+# Curate dataset - remove bad samples
+Notes: there seems to be something wrong with the fw mapping of E1792_N31_D11_fw, E1792_N37_D4_fw, E1792_N37_D11_fw (very few reads and basically no home reads). I filter for samples that have sufficient reads:
+```{r}
+#check how many samples have low total reads
+hopping_eff_tib %>% filter(total_reads < 500) %>% pull(sample_name)
+hopping_eff_tib %>% filter(home_reads < 100) %>% pull(sample_name)
+
+#How different are the Tdgf1 samples
+hopping_eff_tib %>% filter(grepl("Tdgf1", sample_name))
+```
+Filtering this way removes most of the Tdgf1 samples, apparently they are sequenced very shallow. 
+The fract_home reads of the samples is between 22-36% and it looks like the fraction is increasing with later timepoints of harvested gDNA. This could indicate that there is still hopping going on, specially between D4 and D8. 
+
+
+```{r}
+hopping_eff_tib_filt = hopping_eff_tib %>%
+  dplyr::filter(total_reads >= 500 & home_reads >= 100)
+
+#Set filter so that Tdgf1 is included but the bad home location samples are not
+hopping_eff_tib_filt_2 = hopping_eff_tib %>%
+  dplyr::filter(home_reads >= 15)
+```
+
+## Remove samples that are not usable
+E2143 - Remove E2143 from tibble, those are a mix of pCM008 and pCM010, as it is a mix of 6 pools generated in E2016 and already tagmented in E2048. Therefore, no reason to use E2143 for the technology paper
+
+E2866 - Remove E2866 from tibble, Laurens hopped the Nanog construct but didnt take gDNA before sorting for GFP loss, therefore it is not usable for this analysis. 
+
+```{r}
+hopping_eff_tib_wide = hopping_eff_tib_filt_2 %>%
+  mutate(sample_base = str_remove(sample_name, "_(Fw|Rv|fw|rv)$")) %>%
+  select(-sample, -sample_name, -total_reads, -home_reads) %>%
+  pivot_wider(id_cols = c(sample_base, launch_pad), names_from = orientation, values_from = fract_home_reads) %>%
+   rowwise() %>%
+  mutate(
+         fw_over_rv = fw/rv, #to detect problematic samples
+         mean_fract_home = mean(c_across(cols = c(fw,rv)), na.rm = T), #(fw+rv)/2,
+         mean_fract_hopped = 1-mean_fract_home,) %>%
+  filter(!grepl("E2143", sample_base)) %>% 
+  filter(!grepl("E2866", sample_base)) %>% #filter out E2143 & E2866
+  ungroup()
+
+
+hopping_eff_tib_wide_grouped = hopping_eff_tib_wide %>%
+  mutate(sample_group = case_when(sample_base %in% paste0("E2288_MVP", 1:5) ~ "E2288_MVP_C1",
+                                  sample_base %in% paste0("E2288_MVP", 6:10) ~ "E2288_MVP_C6",
+                                  sample_base %in% paste0("E2048_NanogS08_P", 31:39) ~ "E2048_NanogS08",
+                                  sample_base %in% paste0("E2048_NanogS10_P", 1:51) ~ "E2048_NanogS10",
+                                  grepl("E2226|E2285|E2292", sample_base) ~ str_remove(sample_base, "_[0-9]*$"),
+                                  .default = sample_base)) %>%
+  group_by(launch_pad, sample_group) %>%
+  mutate(launch_pad = case_when(grepl("Fzd5", sample_base) ~ "Fzd5", 
+                                grepl("Tdgf1", sample_base) ~ "Tdgf1",
+                                .default = launch_pad)) %>%
+  summarize(mean_fw = mean(fw),
+            mean_rv = mean(rv),
+            mean_fract_home  = mean(mean_fract_home),
+            mean_fract_hopped  = mean(mean_fract_hopped ))
+
+
+```
+
+## annotate dataframe
+Infos to constructs:
+CM002 and CM003 have a short PA signal (snRP1)
+CM008 has SV40 polyA signal, wrong orientation (same as Sox2 constructs)
+CM010 has short polyA signal (snRP1)
+
+```{r}
+# In the pipeline, the nested PB-SB pLD037 inserts from Lise are given the same launch pad position, called N1 in this case. This is because they all have the same sequence because they are not reaching the genome, therefore we have to assign the right LP here. 
+
+
+samples_annotated = hopping_eff_tib_wide %>%
+  mutate(sample_group = case_when(sample_base %in% paste0("E2288_MVP", 1:5) ~ "E2288_MVP_C1",
+                                  sample_base %in% paste0("E2288_MVP", 6:10) ~ "E2288_MVP_C6",
+                                  sample_base %in% paste0("E2048_NanogS08_P", 31:39) ~ "E2048_NanogS08",
+                                  sample_base %in% paste0("E2048_NanogS10_P", 1:51) ~ "E2048_NanogS10",
+                                  grepl("E2226|E2285|E2292|E2143", sample_base) ~ str_remove(sample_base, "_[0-9]*$"),
+                                  .default = sample_base)) %>%
+  select(sample_base, sample_group, launch_pad) %>%
+  mutate(experiment = str_remove(sample_base, "_.*$"),
+         insert = case_when(experiment == "E1177" ~ "pJOYC037",
+                            experiment %in% c('E1682', 'E1792') ~ 'pLD037',
+                            experiment == "E1665" ~  "pME013", #cell line CBS16 = pME013
+                            grepl("NanogS08", sample_base) ~ "pCM008",
+                            grepl("NanogS10", sample_base) ~ "pCM010",
+                            experiment == "E2288" ~ "pMV001",
+                            experiment == "E2143" ~ NA, #check, I think this is actually a mix of pCM008 and pCM010, so cannot really analyse
+                            grepl("16A", sample_base) ~ "pME016",
+                            grepl("CBS16", sample_base) ~ "pME013",
+                            grepl("_34", sample_base) ~ "pME034",
+                            grepl("_41", sample_base) ~ "pME041",
+                            grepl("3xCTCF", sample_base) ~  "pME038",
+                            grepl("CRE6", sample_base) ~ "CRE6",
+                            grepl("MK[0]?1", sample_base) ~ "pMK01", #matches MK01 and MK1
+                            grepl("MK[0]?2", sample_base) ~ "pMK02",
+                            grepl("MK[0]?3", sample_base) ~ "pMK03",
+                            grepl("MK[0]?3", sample_base) ~ "pMK03",
+                            experiment == "E2902" ~ "pJOYC037",
+                            grepl("_LoxP", sample_base) ~ "pLD037",
+                            sample_base == "E1845_NanogS" ~ "pCM002",
+                            sample_base == "E1845_NanogS_techrep1" ~ "pCM002",
+                            sample_base == "E1845_NanogL" ~ "pCM003",
+                            sample_base == "E1845_NanogL_techrep1" ~ "pCM003",
+                            grepl("NRF1", sample_base) ~ "TFR_NRF1",
+                            grepl("OCT4SOX2", sample_base) ~ "TFR_Oct4_Sox2",
+                            grepl("P53", sample_base) ~ "TFR_P53",
+                            grepl("Random2", sample_base) ~ "TFR_Random2",
+                            grepl("STAT3", sample_base) ~ "TFR_STAT3"),
+         launch_pad = case_when(grepl("Fzd5", sample_base) ~ "Fzd5", 
+                                grepl("Tdgf1", sample_base) ~ "Tdgf1",
+                                .default = launch_pad)
+  )
+
+sample_group_annotated = samples_annotated %>%
+  dplyr::select(-sample_base) %>%
+  distinct()
+
+```
+
+
+# Combine data
+```{r}
+
+hopping_eff_tib_wide_annot = 
+  hopping_eff_tib_wide_grouped %>%
+  left_join(sample_group_annotated) 
+
+# Annotate biological or technical replicates (we count the different measurement days from Lise as technical replicates since they come from the same transfections)
+hopping_eff_tib_wide_annot2 =
+  hopping_eff_tib_wide_annot %>% 
+  mutate(bio_rep = case_when(launch_pad == "A1" ~ "rep1",
+                             launch_pad == "C10" ~ "rep1",
+                             sample_group == "E2716_23_34A" ~ "rep4",
+                             grepl("E2555_", sample_group) ~ split_string(sample_group, "_", 2),
+                             grepl("E2716_", sample_group) ~ split_string(sample_group, "_", 2),
+                             grepl("E1845_LoxP", sample_group) ~ "rep2",
+                             insert == "pLD037" ~ "rep1",
+                             sample_group == "E2226_CRE6_non_sorted" ~ "rep1",
+                             sample_group == "E2347_CRE6" ~ "rep2",
+                             grepl("E1665_", sample_group) ~ "rep1",
+                             sample_group == "E2226_CBS16_non_sorted" ~ "rep2",
+                             sample_group == "E2226_16A_non_sorted" ~ "rep1",
+                             sample_group == "E2138_23_34A" ~ "rep1",
+                             sample_group == "E2282_23_34A_WT_ctrl" ~ "rep2",
+                             sample_group == "E2285_34A_ctrl" ~ "rep3",
+                             sample_group == "E2282_23_34A_DelD2_ctrl" ~ "rep1",
+                             sample_group == "E2282_23_34A_DelE12_ctrl" ~ "rep1",
+                             sample_group == "E2347_23_34A_delD2" ~ "rep2",
+                             sample_group == "E2347_23_34A_delE12" ~ "rep2",
+                             sample_group == "E2226_3xCTCF_non_sorted" ~ "rep1",
+                             sample_group == "E2347_3xCTCF" ~ "rep2",
+                             sample_group == "E2285_MK01_ctrl" ~ "rep1",
+                             sample_group == "E2401_23_MK01_ctrl" ~ "rep2",
+                             sample_group == "E2285_MK02_ctrl" ~ "rep1",
+                             sample_group == "E2401_23_MK02_ctrl" ~ "rep2",
+                             sample_group == "E2285_MK03_ctrl" ~ "rep1",
+                             sample_group == "E2401_23_MK03_ctrl" ~ "rep2",
+                             launch_pad == "LP8" ~ "rep1",
+                             experiment == "E2048" ~ "rep1",
+                             experiment == "E2288" ~ "rep1",
+                             experiment == "E1177" ~ "rep1", 
+                             sample_group == "E2902_WT78_1_SB" ~ "rep2",
+                             sample_group == "E2902_WT79_1_SB" ~ "rep2",
+                             sample_group == "E2902_WT83_1_SB" ~ "rep2",
+                             sample_group == "E2902_WT78_2_SB" ~ "rep3",
+                             sample_group == "E2902_WT79_2_SB" ~ "rep3",
+                             sample_group == "E2902_WT83_2_SB" ~ "rep3",
+                             .default = "rep1")) %>%
+  mutate(launch_pad = factor(launch_pad, levels = c("C9", "LP23", "LP8", "A1", "C10", "Fzd5", "Lise_F108", "N1", "Lise_N31", "Lise_N37", "Tdgf1", "Lise_T3", "Lise_T48", "Lise_T137", "pJOYC037")),
+         genotype = case_when(grepl("elD2", sample_group) ~ "delD2",
+                              grepl("elE12", sample_group) ~ "delE12",
+                              grepl("_mCh-_", sample_group) ~ "mCh_del",
+                              .default = "WT"))
+
+            
+```
+
+
+# Plot hopping efficiency based on launch pad position
+## Plot neutral insert
+Combine CRE6 and pLE037 as neutral inserts here
+```{r fig.width = 6, fig.height=5}
+#calculate mean of the bioreps
+summary_tib_LD037_CRE =
+  hopping_eff_tib_wide_annot2 %>% 
+  filter(insert %in% c("pLD037", "CRE6")) %>%
+  group_by(launch_pad, genotype, bio_rep) %>% 
+  summarise(mean_hopped_biorep = mean(mean_fract_hopped),
+            .groups = "drop") %>%
+  group_by(launch_pad, genotype) %>% 
+  summarise(mean_hopped = mean(mean_hopped_biorep),
+            .groups = "drop") %>%
+  mutate(launch_pad =  factor(launch_pad, 
+                             levels = c("Tdgf1", "N1", "Fzd5", "Lise_T48", "Lise_T3", "Lise_F108","Lise_T137", 
+                                        "C9", "LP23", "LP8", "A1", "C10",  
+                                         "Lise_N37","Lise_N31", "pJOYC037"),
+                             labels = c("Tdgf1_1", "Nanog_1", "Fzd5_1", "Tdgf1_48", "Tdgf1_3","Fzd5_108", "Tdgf1_137",
+                                        "xxx", "Sox2_-116kb","xx","xx","xx","Nanog_37", "Nanog_31", "xx")))
+
+#make the plot
+hopping_eff_tib_wide_annot2 %>% 
+  mutate(launch_pad = factor(launch_pad, 
+                             levels = c("Tdgf1", "N1", "Fzd5", "Lise_T48", "Lise_T3", "Lise_F108","Lise_T137", 
+                                        "C9", "LP23", "LP8", "A1", "C10",  
+                                         "Lise_N37","Lise_N31", "pJOYC037"),
+                             labels = c("Tdgf1_1", "Nanog_1", "Fzd5_1", "Tdgf1_48", "Tdgf1_3","Fzd5_108", "Tdgf1_137",
+                                        "xxx", "Sox2_-116kb","xx","xx","xx","Nanog_37", "Nanog_31", "xx"))) %>% 
+  filter(genotype == "WT") %>%
+  filter(insert %in%  c("CRE6", "pLD037")) %>%
+  group_by(launch_pad, bio_rep) %>% 
+  summarise(mean_fract_hopped_bio_rep = mean(mean_fract_hopped)) %>%
+
+  ggplot(aes(x = launch_pad, y = mean_fract_hopped_bio_rep)) +
+
+  geom_crossbar(
+    data = summary_tib_LD037_CRE %>%
+      filter(genotype == "WT"),
+    aes(
+      x = launch_pad,
+      y = mean_hopped,
+      ymin = mean_hopped,
+      ymax = mean_hopped
+    ),
+    inherit.aes = FALSE,
+    width = 0.5,
+    color = "#00A79D",
+    alpha = 0.5
+  ) +
+    # raw distribution
+  geom_jitter(width = 0.2, height = 0, alpha = 0.8, size = 2.5) +
+
+  #facet_grid(. ~ insert, scales = "free_x", space = "free_x") +
+  scale_x_discrete(drop = TRUE) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0,0.05))) +
+  ggtitle("Transposition efficiency based on pools") +
+  xlab(label = "Launch site") +
+  ylab(label = "Transposed fraction") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+
+```
+
+
+# Chromatin context
+First process the chromatin data at the launch pad locations.
+## process LP chromatin data
+```{r}
+#load the encode blacklist regions
+blacklist_bed = read_tsv('/DATA/shared/projects/local_hopping/hopping_technology/01_genomewide_chromatin_context/encode_mm10_blacklist.v2.bed', col_names = c("chr", "start", "end", "type"))
+#load the background processed tibble
+genomic_background_comb = readRDS('/home/c.moene/projects/hopping_technology/01_genomewide_chromatin_background/rds/CM20260330_summary_stats_chrom_background.rds')
+```
+
+```{r}
+
+#location of the pipeline output files
+path_context_2000_LPs = '/DATA/shared/projects/local_hopping/hopping_technology/03_hopping_eff_single_LPs/CM20260324_local_context/coverage_results/single_SB_LPs-2000_summary.txt'
+
+#features we want to process
+features_oi = c("'H3K9me3_pADam'",  "'LB1_pADam'" , #heterochromatin
+                "'EZH2'", "'H3K27me3-2i'", #polycomb
+                "'RAD21'" , "'CTCF'", #3D genome
+                "'H3K27ac-2i'", "'p300-2i'", #euchromatin
+                "'ATAC'", "'DNase'", #accessibility
+                "'H3K36me3'", "'POLR2A'", "'TTseq_fw'", "'TTseq_rv'", #transcription
+                "'MED1'", "'H3K4me1'", "'H3K4me3'", #CRE
+                "'input_1'", "'input_2'" #input samples
+                )
+
+#load the tibbles
+LP_tib_oi_2000 = read_tsv(path_context_2000_LPs) %>%
+  dplyr::select(any_of(c("#'chr'","'start'","'end'" , features_oi)))
+
+#process the chromatin signal at the insertion sites
+
+chrom_LP_2000 = chrom_insert_sites(LP_tib_oi_2000,
+                                   filter(genomic_background_comb, window_size == '2000'), #load properly
+                                   blacklist_bed,
+                                       log_features = c("LB1_pADam", "H3K9me3_pADam"), 
+                                       non_cistrome_features = c("TTseq_fw", "TTseq_rv"),
+                                       input_cols = c("input_1", "input_2")     
+)
+
+
+
+chrom_LP_tib  = chrom_LP_2000 %>%
+  dplyr::rename(start_interval = start, end_interval = end)|>
+   mutate(start = start_interval + as.numeric(window_size)/2) #actual LP location is 1/2 window size after start window
+```
+
+one LP gets filtered out, why?
+```{r}
+LP_bins_gr = chrom_LP_2000 %>% 
+  dplyr::select(chr, start, end) %>%
+  distinct() %>%
+  GRanges()
+
+findOverlaps(GRanges(blacklist_bed), GRanges(LP_bins_gr))
+LP_bins_gr[1]
+GRanges(blacklist_bed)[3270]
+```
+So T3 overlaps (the edge of) an encode blacklist region. But the input data does not suggests that there is a mappability problem in our window. Also, in the PB data we did not exclude any LPs purely based on the encode blacklist (the one PB overlapping the blacklist also had an input problem). So I think it is fair to keep this LP in the dataset here.
+
+
+
+## link locations to data
+First link the pipeline output to the LP names, based on the input file for the chromatin pipeline
+```{r}
+LP_locations = read_tsv('/DATA/shared/projects/local_hopping/hopping_technology/03_hopping_eff_single_LPs/CM20260324_LP_locations_clones.txt') %>%
+  dplyr::rename(LP_name_old = barcode) %>%
+  mutate(launch_pad = case_when(LP_name_old %in% c("161kb", "39kb", "116kb") ~ paste0("-", LP_name_old),
+                                LP_name_old == "715kb" ~ "+715kb",
+                                LP_name_old == "inSCR" ~ "in SCR",
+    .default = LP_name_old
+  ))
+
+chrom_LP_tib_annot = left_join(chrom_LP_tib, LP_locations) 
+
+```
+
+## plot heatmap
+Get overlaps with bed file features (protein-coding genes and LADs)
+```{r}
+
+LP_gene_overlap = read_tsv('/DATA/shared/projects/local_hopping/hopping_technology/03_hopping_eff_single_LPs/CM20260324_local_context/feature_results/overlap_single_SB_LPs_genes.txt',
+                          col_names = c('chr_LP', 'start_LP', 'end_LP', 'LP_name', 'chr_gene', 'source', 'feature_type', 'start_gene', 'end_gene', 'X10', 'strand_gene','X12', 'gene_details', 'X14'))
+
+LP_gene_overlap_protcoding = LP_gene_overlap %>%
+  filter(grepl('gene_type=protein_coding', gene_details))
+
+LP_gene_overlap_protcoding_forjoin = LP_gene_overlap_protcoding %>%
+  dplyr::select(LP_name, chr_gene, start_gene, end_gene)
+
+LP_LAD_overlap = read_tsv('/DATA/shared/projects/local_hopping/hopping_technology/03_hopping_eff_single_LPs/CM20260324_local_context/feature_results/overlap_single_SB_LPs_LADs.txt',
+                          col_names = c('chr_LP', 'start_LP', 'end_LP', 'LP_name', 'chr_LAD', 'start_LAD', 'end_LAD','X8'))
+LP_LAD_overlap_forjoin = LP_LAD_overlap %>%
+  dplyr::select(LP_name, chr_LAD, start_LAD, end_LAD)
+  
+
+LP_context_feature_tib = chrom_LP_tib_annot %>%
+  select(launch_pad, chr, start_interval, end_interval) %>%
+  dplyr::rename(LP_name = launch_pad) %>%
+  distinct() %>%
+  left_join(LP_gene_overlap_protcoding_forjoin) %>%
+  left_join(LP_LAD_overlap_forjoin) %>%
+  mutate(genebody = !is.na(chr_gene),
+         LAD = !is.na(chr_LAD))
+
+LP_context_feature_df = LP_context_feature_tib %>%
+  dplyr::select(LP_name, genebody, LAD) %>%
+  column_to_rownames(var = "LP_name") %>%
+  data.frame()
+```
+
+```{r}
+#annotate the features
+relevant_features = c(
+  "H3K9me3_pADam", "LB1_pADam",
+  "EZH2", "H3K27me3_2i",
+  "CTCF", "RAD21",
+  "H3K27ac_2i", "p300_2i",
+  "DNase", "ATAC",
+  "H3K36me3", "POLR2A", "TTseq_total",
+  "MED1", "H3K4me1","H3K4me3")
+
+feature_classes = c(rep('heterochromatin',2),
+                    rep('polycomb', 2),
+                    rep('genome_folding', 2),
+                    rep('euchromatin',2),
+                    rep('accessibility', 2),
+                    rep('transcription', 3),
+                    rep('active_CRE',3))
+
+tib_relevant_features = tibble(feature = relevant_features, feature_class = feature_classes)
+df_relevant_features = tib_relevant_features %>%
+  column_to_rownames(var = 'feature') %>%
+  data.frame()
+```
+
+
+make wide matrix
+```{r}
+LP_covs_2000_rel_maps_tibs = chrom_LP_tib_annot %>%
+  dplyr::filter(feature %in% relevant_features) %>%
+  dplyr::rename(LP_name = launch_pad) %>%
+  dplyr::select(chr, start_interval, end_interval, start, LP_name, feature, zscore) %>%
+  pivot_wider(names_from = feature, values_from = zscore)
+
+LP_covs_2000_rel_heatmap_matrix = LP_covs_2000_rel_maps_tibs %>% 
+  dplyr::select(-c(chr, start_interval, end_interval, start)) %>%
+  column_to_rownames(var = "LP_name") %>%
+  as.matrix()
+```
+
+
+actually make the heatmap
+```{r S2X_heatmap_single_LPs_all, fig.width  = 10}
+#annotation colors
+ann_colors <- list(
+  feature_class = setNames(
+    brewer.pal(length(unique(df_relevant_features$feature_class)), "Set1"),
+    unique(df_relevant_features$feature_class)
+  ),
+  genebody = setNames(
+    brewer.pal(8, "Dark2")[1:2],
+    unique(LP_context_feature_df$genebody)
+  ),
+  LAD = setNames(
+     brewer.pal(8, "Dark2")[3:4],
+    unique(LP_context_feature_df$LAD)
+  )
+)
+
+ComplexHeatmap::pheatmap(
+  LP_covs_2000_rel_heatmap_matrix,
+  scale = "none",                 # IMPORTANT: no additional scaling
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  color = colorRampPalette(rev(brewer.pal(n = 11, name="RdBu")))(100),
+  breaks = seq(-4, 4, length.out = 101),
+  annotation_col = df_relevant_features,
+  annotation_row = LP_context_feature_df,
+  annotation_colors = ann_colors,
+  clustering_distance_rows = 'correlation',
+  clustering_distance_cols = 'correlation'
+  )
+
+```
+
+## hopping
+Here I calculate the mean hopping efficiency by first calculating the mean per biorep (across techreps) and then the mean across bioreps.
+Filter only for the neutral inserts here, the other inserts are more complex to group correctly (and not needed here).
+
+```{r}
+
+hopping_eff_tib_wide_annot_for_link = hopping_eff_tib_wide_annot2 %>%
+  mutate(launch_pad = case_when(launch_pad == "A1" ~ "in SCR",
+                                launch_pad == "C9" ~ "-161kb",
+                                launch_pad == "C10" ~ "+715kb",
+                                launch_pad == "LP23" ~ "-116kb",
+                                launch_pad == "LP8" ~ "-39kb",
+                                grepl("Lise_", launch_pad) ~ str_remove(launch_pad, "Lise_"),
+                                .default = launch_pad
+                                ))
+
+hopping_eff_mean_for_link = hopping_eff_tib_wide_annot_for_link %>%
+  filter(insert %in%  c("CRE6", "pLD037")) %>%
+  group_by(launch_pad, insert, bio_rep) %>%
+  summarize(mean_fract_hopped_biorep = mean(mean_fract_hopped),
+            N_techreps = n()) %>%
+  group_by(launch_pad, insert) %>%
+  summarize(mean_fract_hopped_total = mean(mean_fract_hopped_biorep),
+            N_techreps = sum(N_techreps),
+            N_bioreps = n())
+
+hop_eff_loc_chrom = left_join(hopping_eff_mean_for_link, LP_locations) %>%
+  left_join(chrom_LP_tib, relationship = 'many-to-many') %>%
+  filter(!is.na(feature)) #remove LPs that are not in the chromatin data because they were filtered out
+```
+
+```{r S2X_correlation_chromatin_single_LPs,  fig.width  = 8}
+
+
+hop_eff_loc_chrom %>%
+  filter(insert %in%  c("CRE6", "pLD037")) %>%
+  filter(feature %in% relevant_features) %>%
+  ggplot(aes(x = zscore, y = mean_fract_hopped_total)) +
+  facet_wrap(~feature) +
+  geom_point(size = 1) +
+  stat_cor(method = 'pearson', label.y = 0.9)+
+  scale_x_continuous(limits = c(-4, 6), expand = c(0,0)) +
+  geom_smooth(method = 'lm')+
+  theme_bw() +
+  theme(aspect.ratio = 0.5)
+
+
+  
+```
+The correlations are not really agreeing with what we measured in the PB-SB experiments, but there are only 10 datapoints and the range of covered chromatin is much smaller.
+
+
+## heatmap relevant LPs only
+
+what are the LPs we have neutral insert hopping data for?
+```{r S2X_heatmap_chromatin_single_LPs_neutral_insert,  fig.width  = 10}
+LPs_with_hop_data = hop_eff_loc_chrom %>%
+  filter(insert %in%  c("CRE6", "pLD037")) %>%
+  pull(launch_pad) %>% unique()
+
+ph = ComplexHeatmap::pheatmap(
+  LP_covs_2000_rel_heatmap_matrix[LPs_with_hop_data,],
+  scale = "none",                 # IMPORTANT: no additional scaling
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  color = colorRampPalette(rev(brewer.pal(n = 11, name="RdBu")))(100),
+  breaks = seq(-4, 4, length.out = 101),
+  annotation_col = df_relevant_features,
+  annotation_row = LP_context_feature_df[LPs_with_hop_data,],
+  annotation_colors = ann_colors,
+  clustering_distance_rows = 'correlation',
+  clustering_distance_cols = 'correlation'
+  )
+
+ph =  ComplexHeatmap::draw(ph)
+
+order_of_clones = rownames(LP_covs_2000_rel_heatmap_matrix[LPs_with_hop_data,])[ComplexHeatmap::row_order(ph)]
+
+```
+
+
+barplot
+```{r S3B_barplot_with_heatmap_LPs, fig.width  = 4}
+hopping_eff_mean_for_link %>% 
+  filter(launch_pad %in% order_of_clones) %>%
+  mutate(launch_pad_ordered = factor(launch_pad, levels = rev(order_of_clones))) %>%
+  ggplot(aes(y = launch_pad_ordered, x = mean_fract_hopped_total )) +
+  geom_col() +
+  scale_y_discrete()+
+  scale_x_continuous(limits = c(0,1), expand = c(0,0)) +
+  theme_bw() 
+
+```
+
+# Extract numbers
+I need a few numbers for the text.
+What is the overall hopping efficiency in the PB-SB hopping?
+
+```{r}
+hopping_eff_tib_wide_annot2 %>% 
+  filter(insert == "pJOYC037") %>%
+  filter(bio_rep %in% c('rep2','rep3')) %>% #we decided not to use the older, less complex replicate
+  dplyr::select(sample_group, mean_fract_hopped) %>% 
+  kable()
+  
+hopping_eff_tib_wide_annot2 %>% 
+  ungroup()%>%
+  filter(insert == "pJOYC037") %>%
+  filter(bio_rep %in% c('rep2','rep3')) %>% #we decided not to use the older, less complex replicate
+  dplyr::select(sample_group, mean_fract_hopped) %>%
+  pull(mean_fract_hopped) %>% summary()
+
+#mean per parental clone
+hopping_eff_tib_wide_annot2 %>% 
+  ungroup()%>%
+  filter(insert == "pJOYC037") %>%
+  filter(bio_rep %in% c('rep2','rep3')) %>% #we decided not to use the older, less complex replicate
+  mutate(parental_clone = str_extract(sample_group, "WT..")) %>%
+  dplyr::select(sample_group,parental_clone, mean_fract_hopped) %>%
+  group_by(parental_clone) %>%
+  summarise(mean_fract_hopped = mean(mean_fract_hopped)) %>%
+  mutate(home_reads = 1-mean_fract_hopped)
+```

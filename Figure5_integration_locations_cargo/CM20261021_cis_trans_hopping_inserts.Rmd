@@ -1,0 +1,343 @@
+---
+title: "CM20261021_cis_trans_hopping_inserts"
+output: html_document
+date: "2026-04-07"
+---
+
+#Goal
+Systematically analyse the balance between cis (local and distal) and trans hopping, for different inserts.
+
+# Setup
+##Libraries
+Load the libraries and set the parameters.
+```{r load_libraries}
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(gtools)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggh4x)
+library(stringr)
+library(readr)
+library(knitr)
+library(cowplot)
+library(ggpubr)
+
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(Biostrings)
+library(ggseqlogo)
+library(ShortRead)
+library(GENOVA)
+library(GGally)
+
+library(ggbeeswarm)
+library(scales)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+
+```
+
+## Paths & parameters
+```{r paths_parameters}
+
+#datatag
+datetag = paste0("CM",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/home/c.moene/projects/hopping_technology/05_hopping_distribution_single_LPs/analysis_",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+```
+
+```{r knits setup}
+
+library(knitr)
+opts_chunk$set(cache = T,
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               dpi = 300,
+               fig.path = paste0(file.path(output_dir), "/cistrans/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+```{r}
+#cutoff to call an integration local
+distance_local_hop = 2E6
+```
+
+# Load data
+
+All single LP integration data was collected in ~/projects/hopping_technology/SB_transposition_manuscript/Figure5_integration_locations_cargo/CM20260401_collect_mapped_ints_single_LPs.Rmd
+Load them here
+```{r}
+all_ints_comb = read_tsv( "/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Figure5_integration_locations_cargo/CM20260104_collected_mapped_ints_all.tsv")
+
+all_ints_comb = all_ints_comb %>%
+  mutate(type = replace_na(type,'pool')) 
+
+#E2401 has pcr contaminations that are unresolved in the 'collect mapped ints all' object, instead get the correct filtering from the CTCF paper
+tib_E2401_curated_strict = readRDS("/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Figure5_integration_locations_cargo/E2401_curated_strict.rds") 
+
+tib_E2401_curated_strict_ctrls = tib_E2401_curated_strict %>%
+  dplyr::mutate(insert = case_when(insert == "CBS1x_Fw_Sox2P" ~ '1xCTCF_fw_Sox2P',
+                                   insert == "CBS3x_Fw_Sox2P" ~ '3xCTCF_fw_Sox2P',
+                                   insert == "CBS3x_Rv_Sox2P" ~ '3xCTCF_rv_Sox2P',
+                                     .default = insert)) %>% 
+  filter(sample_type == "control pool") %>%
+  mutate(LP = "-116 kb",
+         LP_coordinate = 34643961,
+         LP_chr = "chr3",
+         genotype = "WT",
+         hopped = start != LP_coordinate,
+         dist_to_LP = case_when(chr == LP_chr ~ start - LP_coordinate,
+                                .default = NA),
+         local_hop = abs(dist_to_LP) < distance_local_hop & !is.na(dist_to_LP) & hopped) %>%
+  filter(experiment == "E2401")
+```
+
+```{r}
+#expected fraction based on chr lengths
+chromsizes = read_tsv('/DATA/usr/c.moene/projects/Hopping_technology/Explore_existing_data/rds/mm10.chrom.sizes', 
+                      col_names = c('chromosome', 'length'))
+
+chrom_fract = chromsizes %>%
+  mutate(chrom_fract = length/sum(length))
+
+```
+
+
+# Pools
+
+## test read cutoff
+Load the data and do very mild filtering
+```{r}
+all_pool_data = all_ints_comb %>%
+  filter(genotype == "WT") %>%
+  filter(LP != "T201") %>% #has two launch sites, confusing
+  filter(type == "pool") %>%
+  #replace E2401 with filtered version
+  filter(experiment != "E2401") %>%
+  bind_rows(tib_E2401_curated_strict_ctrls)
+
+#remove any possible bleedthrough from other samples
+all_LP_starts = all_ints_comb %>%
+  mutate(LP_chr_start = paste0(LP_chr, "_", LP_coordinate)) %>%
+  pull(LP_chr_start) %>%
+  unique()
+  
+
+all_pool_data_filt = all_pool_data %>%
+  mutate(chr_start = paste0(chr, "_", start)) %>%
+  filter(!chr_start %in% all_LP_starts)  %>%
+  filter(!chr %in% c("Tn5_plasmid","chrY", "chrM") ) #irrelevant chromosomes, cell line is female
+
+
+```
+
+
+Look at the read_count threshold: is 2 reads good to remove noise from other chromosomes?
+```{r}
+#observed fractions
+launch_chr_int_count_pools_persample = 
+  all_pool_data_filt %>%
+  #rough classification of samples
+  mutate(sample_new = paste0(experiment, "_", LP, "_", insert, "_", replicate, "_", techrep)) %>%
+  mutate(on_launch_chr = chr == LP_chr) %>%
+  group_by(experiment,sample_new, LP, LP_coordinate, LP_chr, insert, genotype, on_launch_chr) %>%
+  #calculate N ints at various read_count thresholds
+  summarize(N_ints_1 = sum(read_count >= 1),
+            N_ints_2 = sum(read_count >= 2),
+            N_ints_3 = sum(read_count >= 3),
+            N_ints_5 = sum(read_count >= 5)
+            ) %>%
+  mutate(fract_ints_1 = N_ints_1 / sum(N_ints_1),
+         fract_ints_2 = N_ints_2 / sum(N_ints_2),
+         fract_ints_3 = N_ints_3 / sum(N_ints_3),
+         fract_ints_5 = N_ints_5 / sum(N_ints_5),
+         ) %>%
+  left_join(chrom_fract, by=c('LP_chr' = 'chromosome'))
+
+launch_chr_int_count_pools_persample_long = launch_chr_int_count_pools_persample %>%
+  pivot_longer(
+    cols = starts_with(c("N_ints", "fract_ints")),
+    names_to = c(".value", "read_count_threshold"),
+    names_pattern = "(N_ints|fract_ints)_(\\d+)"
+  )
+
+#color by threshold
+ggplot(filter(launch_chr_int_count_pools_persample_long, on_launch_chr),
+       aes(x = read_count_threshold, size = N_ints, y = fract_ints,  col = read_count_threshold)) + 
+  facet_wrap(. ~ insert + LP) +
+  geom_point() +
+  scale_y_continuous(limits = c(0, 1))+
+  ylab("fraction of integrations on launch chromosome") +
+  theme_bw()
+```
+
+Indeed, for all samples, from 2 reads onwards the fraction is stable, suggesting that 2 reads is a good cut-off.
+
+Use the techreps of E1845 to judge whether there is a bias from tagmentation depth
+```{r}
+launch_chr_int_count_pools_persample_long  %>%
+  filter(experiment == "E1845" & read_count_threshold == 2 & on_launch_chr )
+```
+
+fractions on the launch chromosome are quite comparable between the techreps and definitely much more different between the samples. So saturation is not a big issue here.
+
+
+## local vs cis vs trans
+### preprocessing
+
+First properly combine replicates, then calculate the fractions=
+```{r}
+
+loc_cis_trans_ints  =   all_pool_data_filt %>%
+  filter(read_count >= 2) %>%
+  #rough classification of samples
+  mutate(sample_for_plot = paste0(experiment, "_", LP, "_", insert, "_", replicate)) %>% #this merges the techreps of E1845, without deduplicating
+  group_by(sample_for_plot) %>%
+  mutate(N_ints_sample = n()) %>%
+  ungroup()%>%
+  filter(N_ints_sample >= 10) %>%
+  mutate(on_launch_chr = chr == LP_chr,
+         local_hop = on_launch_chr & abs(start - LP_coordinate) < distance_local_hop,
+         int_location = case_when(local_hop ~ "local",
+                                  on_launch_chr ~ "cis", #cis excludes the local hops
+                                  .default = 'trans'),
+         int_location = factor(int_location, levels = c('local','cis','trans'))) %>%
+  group_by(experiment,sample_for_plot, LP, LP_coordinate, LP_chr, insert, insert_name, genotype, int_location) %>%
+  #calculate fraction of integrations for cis, trans
+  summarize(N_ints = n()) %>%
+  mutate(fract_ints = N_ints/sum(N_ints))
+
+#there are missing combinations in here, add them:
+all_combis = loc_cis_trans_ints %>% 
+  tidyr::expand(int_location)
+
+loc_cis_trans_ints_full = loc_cis_trans_ints  %>% 
+  right_join(all_combis) %>%
+  replace_na(list(N_ints = 0, fract_ints = 0)) %>%
+  mutate(total_ints = sum(N_ints)) %>%
+  left_join(chrom_fract, by=c('LP_chr' = 'chromosome'))
+
+
+loc_cis_trans_ints_annot = loc_cis_trans_ints_full %>%
+  mutate(insert_group_1 = case_when(grepl('Nanog', insert)~ "Nanog promoter reporter",
+                                    insert == "minimal insert" ~ "minimal insert",
+                                    insert == "pMV001" ~ "enhancer",
+                                    insert == "Sox2P_CDS" ~ "gene",
+                                    grepl("CTCF", insert) & grepl("Sox2P", insert) ~ "CTCF+promoter",
+                                    grepl("CTCF", insert) ~ "CTCF",
+                                    grepl("Sox2P", insert) ~ "Sox2P",
+                                  grepl('pLE', insert) ~ "TF reporter"),
+         insert_group_1 = factor(insert_group_1, levels =  c("minimal insert", "Sox2P","Nanog promoter reporter", "TF reporter", "gene", "CTCF", "CTCF+promoter", "enhancer")),
+         insert_category = case_when(insert_group_1 %in% c("Nanog promoter reporter","Sox2P", "TF reporter" ) ~ "promoter",
+                                     .default = insert_group_1),
+         insert_category = factor(insert_category, levels = c("minimal insert", "promoter", "gene", "CTCF", "CTCF+promoter", "enhancer")))
+
+```
+
+### plot all data
+Filter out LP-39kb and Nanog_2 (not used in the paper)
+```{r S6A_overview_trans_hopping_all_filtered}
+
+loc_cis_trans_ints_annot %>%
+  filter(genotype == "WT") %>%
+  filter(!LP %in% c("N2", "-39 kb")) %>%
+  ggplot(aes(x = insert_group_1, y = fract_ints)) +
+  facet_grid(int_location ~ ., scales='free_x', space = 'free_x') +
+  geom_boxplot(outlier.shape = NA)+
+  geom_jitter(width = 0.3, height = 0, aes(col = LP)) +
+  scale_y_continuous(limits = c(0,1), expand = expansion(mult = c(0, 0.05)))+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        panel.spacing.x = unit(0, "lines")) +
+  xlab("insert type")+
+  ylab("fraction of integrations")
+
+```
+
+
+
+### Sox2 -116 kb
+-116 kb, one dot per sample
+```{r 5H_trans_hopping_Sox2_locus, fig.width = 6, fig.height = 5}
+insert_category_cols <- c(
+  "promoter" = "#1B9E77",
+  "gene" = "#D95F02",
+  "CTCF" = "#7570B3",
+  "CTCF+promoter" = "#E7298A",
+  "minimal insert" = "#666666",
+  "enhancer" = "#E6AB02"
+)
+
+colscale_insert_cat = scale_color_manual(values = insert_category_cols, aesthetics = 'col')
+
+plot_cistrans_LP23 = loc_cis_trans_ints_annot %>%
+  filter(genotype == "WT" & LP == "-116 kb") %>%
+  ggplot(aes(x = insert, y = fract_ints, col = insert_category)) +
+  facet_nested(int_location  ~ insert_category,  scales = 'free_x', space = 'free_x') +
+  stat_summary(fun = median, geom = "crossbar", width = 0.5, alpha = 0.5)+
+  geom_jitter(width = 0.3, height = 0)+
+  theme_bw() +
+  scale_y_continuous(limits = c(0,1))+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        panel.spacing.x = unit(0, "lines"),
+        legend.position = 'none') +
+  xlab("insert type")+
+  ylab("fraction of integrations") +
+  colscale_insert_cat 
+plot_cistrans_LP23
+```
+
+### Nanog
+N1, one dot per exact insert
+```{r 5H_trans_hopping_Nanog_locus, fig.width = 3, fig.height = 5}
+insert_category_cols_2 <- c(
+  "Nanog promoter reporter" = "#1B9E77",
+  "TF reporter" = "#a6761d", #added a new color for the TF reporters in this figure
+  "CTCF" = "#7570B3",
+  "CTCF+promoter" = "#E7298A",  
+  "minimal insert" = "#666666",
+  "other" = "grey80"
+)
+
+colscale_insert_cat2 = scale_color_manual(values = insert_category_cols_2, aesthetics = 'col')
+
+
+plot_cistrans_Nanog = loc_cis_trans_ints_annot %>%
+  filter(genotype == "WT" & LP == "N1") %>%
+  ggplot(aes(x = insert_group_1, y = fract_ints, col = insert_group_1)) +
+  facet_nested(int_location  ~ .,  scales = 'free_x', space = 'free_x') +
+  # geom_col(position = position_dodge2(width = 1), data = sum_data_for_plot) +
+  # geom_boxplot()+
+  stat_summary(fun = median, geom = "crossbar", width = 0.5)+
+  geom_jitter(width = 0.3, height = 0)+
+  theme_bw() +
+  scale_y_continuous(limits = c(0,1))+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        panel.spacing.x = unit(0, "lines"),
+        legend.position = 'none') +
+  xlab("insert type")+
+  ylab("fraction of integrations") +
+  colscale_insert_cat2
+
+plot_cistrans_Nanog
+```
+
+```{r 5EF_trans_hopping_Sox2_and_Nanog, fig.width = 8, fig.height = 5}
+
+cowplot::plot_grid(plot_cistrans_LP23, plot_cistrans_Nanog, nrow = 1,
+                   rel_widths = c(6, 3),
+                   align = 'h', axis = 'tb')
+```
+
+

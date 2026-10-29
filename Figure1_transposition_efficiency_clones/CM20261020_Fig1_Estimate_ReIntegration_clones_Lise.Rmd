@@ -1,0 +1,492 @@
+---
+title: "me20260916_Hop_Eff_Clones_Lise"
+author: "Mathias"
+date: "2026-09-16"
+output: 
+  html_document:
+    theme: journal #cerulean
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+  editor_options:
+    chunk_output_type: console
+---
+
+# Aim 
+Determine the Excision and reintegration efficiency of Sleeping Beauty transposons containing the same insert from different genomic loci. 
+
+# Experimental setup
+Clonal cell lines containing the SB cassette at different precise genomic locations were subject to SB mediated hopping by transfecting the cells with the SB transposase. Single cell clones were isolated from the hopped population and screened for evidence of hopping by PCR. Clones that showed indication of hopping were selected and subject to Tn5-based mapping. 
+
+Here is the selection and analysis of excised and reintegrated clones from Figure 1C. 
+
+# Experiments
+E1682 - mapping of clones for Fzd5, Tdgf1, Nanog
+E1792 - mapping of clones for T3, T48, T201, F108, N31, N37
+E1828 - mapping of clones for T3, T48, T201
+
+
+##NOTE
+clone T201 has probably a second LP (30Mb) away, which causes weird distributions. 
+Therefore filter it out.
+
+#Setup
+```{r}
+library(stringr)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(ggplot2)
+library(Biostrings)
+library(scales)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+```
+
+#Paths and parameters
+```{r}
+#datatag
+datetag = paste0("CM",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/home/c.moene/projects/hopping_technology/08_Clones_transposition_eff/analysis_",datetag,"/")
+dir.create(output_dir, showWarnings = FALSE)
+```
+
+```{r}
+library(knitr)
+opts_chunk$set(cache = F,
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               dpi = 300,
+               fig.path = paste0(file.path(output_dir))) 
+pdf.options(useDingbats = FALSE)
+```
+
+#Annotate Landing pads
+```{r}
+N37 <- GenomicRanges::GRanges(seqnames = "chr6", ranges = IRanges(start = 109001001, end = 109001001), strand = "*")
+N31 <- GenomicRanges::GRanges(seqnames = "chr6", ranges = IRanges(start = 143694590, end = 143694590), strand = "*")
+F108 <- GenomicRanges::GRanges(seqnames = "chr1", ranges = IRanges(start = 79293542, end = 79293542), strand = "*")
+T201 <- GenomicRanges::GRanges(seqnames = "chr9", ranges = IRanges(start = 112440264, end = 112440264), strand = "*")
+T137 <- GenomicRanges::GRanges(seqnames = "chr9", ranges = IRanges(start = 110925104, end = 110925104), strand = "*")
+T48 <- GenomicRanges::GRanges(seqnames = "chr9", ranges = IRanges(start = 109626922, end = 109626922), strand = "*")
+T3 <- GenomicRanges::GRanges(seqnames = "chr9", ranges = IRanges(start = 109077722, end = 109077722), strand = "*")
+Tdgf1 <- GenomicRanges::GRanges(seqnames = "chr9", ranges = IRanges(start = 110927601, end = 110927601), strand = "*")
+Fzd5 <- GenomicRanges::GRanges(seqnames = "chr1", ranges = IRanges(start = 64993483, end = 64993483), strand = "*")
+```
+
+#Load clonal integration data from processed file
+```{r}
+
+clones_int_fig1 = read_tsv("/home/c.moene/projects/hopping_technology/GEO_upload/processed_datafiles/mapping_SB_ints_clones.txt")
+```
+
+# E1682
+```{r}
+clones_E1682 = clones_int_fig1 %>% filter(experiment == "E1682")
+
+#Determine read cutoff for clones
+clone_summary <- clones_E1682 %>%
+  group_by(sample) %>%
+  mutate(
+    total_reads_sample = sum(read_count, na.rm = TRUE),
+    fract_reads_sample = read_count / total_reads_sample
+  ) %>%
+  arrange(sample, desc(read_count)) %>%
+  mutate(rank_in_sample = row_number()) %>%
+  ungroup()
+
+```
+
+```{r}
+# choose thresholds
+min_reads <- 3
+min_fraction <- 0.2  
+
+reliable_integrations <- clone_summary %>%
+  filter(read_count >= min_reads, fract_reads_sample >= min_fraction)
+
+# number of clones with >=1 reliable integration
+n_clones_with_reliable <- reliable_integrations %>%
+  summarise(n_clones = n_distinct(sample))
+
+# per Launch site
+clones_per_LS <- reliable_integrations %>%
+  distinct(sample, launch_site) %>%
+  dplyr::count(launch_site, name = "n_clones_with_reliable_integration")
+
+# how many reliable integrations per clone
+integrations_per_clone <- reliable_integrations %>%
+  dplyr::count(sample, name = "n_reliable_integrations")
+
+clone_class_summary <- integrations_per_clone %>%
+  dplyr::count(n_reliable_integrations, name = "n_clones")
+
+# outputs
+n_clones_with_reliable
+clones_per_LS
+integrations_per_clone
+clone_class_summary
+
+```
+**Conclusion:**
+I filtered each clone to have at least 3 reads per putative integration side and that the integration should represent at least 20% of the total reads. 
+By applying this filters, we find 
+30 int --> Fzd5
+33 int --> Nanog
+48 int --> Tdgf1
+
+## Quality control - chromosomal distribution
+```{r}
+# On which chromosomes are the integrations
+reliable_integrations %>% 
+  group_by(launch_site, chr) %>% 
+  summarise(n = n())
+
+#There is an issue that 19 integrations are found on chr1, when looking at them it looks like they are coming from Fzd5_108 ()
+reliable_integrations %>% filter(launch_site == "Tdgf1") %>% group_by(sample, chr) %>% summarise(n = n())
+reliable_integrations %>% filter(launch_site == "Tdgf1") %>% distinct(sample) %>% summarise(count = n())
+reliable_integrations %>% filter(launch_site == "Tdgf1" & start != "79293540") %>% distinct(sample) %>% summarise(count = n())
+
+```
+
+## Check Tdgf1 contamination
+```{r}
+# Check if integtations that have the contamination also have another integration
+reliable_integrations %>% filter(launch_site == "Tdgf1") %>% group_by(sample, chr) %>% summarise(count = n())
+
+#which samples have integratios in different chr?
+reliable_integrations %>% filter(launch_site == "Tdgf1") %>% group_by(sample, chr) %>% summarise(count = n()) %>% group_by(sample) %>% summarise(nr = n()) %>% arrange(desc(nr))
+
+Tdgf1_cont_samples_with_second_int = reliable_integrations %>% 
+  filter(launch_site == "Tdgf1") %>% 
+  group_by(sample, chr) %>% 
+  summarise(count = n()) %>% 
+  group_by(sample) %>% 
+  summarise(nr = n()) %>% 
+  filter(nr >1) %>% 
+  dplyr::pull(sample)
+
+
+#Investigate suspicious samples
+#reliable_integrations %>% filter(sample %in% Tdgf1_cont_samples_with_second_int) %>% View()
+
+# New reliable integration tibble
+# - filter out Tdgf1 clones that have contamination
+
+clone_Tdgf1_cont = reliable_integrations %>% filter(launch_site == "Tdgf1" & chr == "chr1" & start == "79293540") %>% pull(sample)
+clone_Tdgf1_cont_exclude =  setdiff(clone_Tdgf1_cont, Tdgf1_cont_samples_with_second_int)
+
+#Filter out Tdgf1 clones that are contaminations
+reliable_integrations_1 = reliable_integrations %>%
+  filter(!sample %in% clone_Tdgf1_cont_exclude)
+
+clones_per_LP_1 =
+  reliable_integrations_1 %>% 
+  distinct(sample, launch_site) %>%
+  dplyr::count(launch_site, name = "n_clones_with_reliable_integration")
+
+clones_per_LP_1
+```
+**Conclusion:** 
+Clones "Tdgf1_clone_114" "Tdgf1_clone_135" "Tdgf1_clone_177" "Tdgf1_clone_201" "Tdgf1_clone_33" have a contaminating integration from the Fzd5_F108 LP in them but also a second integration that is reasonable. Therefore i believe them to be real. 
+
+Fzd5 - 30
+Nanog - 33
+Tdgf1 - 34
+
+# E1792
+```{r}
+clones_E1792 = clones_int_fig1 %>% filter(experiment == "E1792")
+```
+
+## Quality control
+```{r}
+# How many clones do we have per launch pad
+clones_E1792 %>% 
+  group_by(launch_site) %>%
+  distinct(sample) %>%
+  dplyr::count()
+
+# How many do have reliable integrations?
+clone_summary_E1792 <- clones_E1792 %>%
+  group_by(sample) %>%
+  mutate(
+    total_reads_sample = sum(read_count, na.rm = TRUE),
+    fract_reads_sample = read_count / total_reads_sample
+  ) %>%
+  arrange(sample, desc(read_count)) %>%
+  mutate(rank_in_sample = row_number()) %>%
+  ungroup()
+
+# Select the top two ranked ones
+clone_summary_E1792 %>% 
+  filter(rank_in_sample <= 2) %>%
+  group_by(sample, launch_site) %>%
+  dplyr::count(sample)
+
+clone_summary_E1792 %>% 
+  filter(rank_in_sample <= 2) %>%
+  distinct(sample, launch_site) %>%
+  dplyr::count(launch_site, name = "n_samples")
+
+
+#Cutoff - each integration requires at least 10 reads
+clone_summary_E1792 %>%
+  filter(read_count >= 10) %>%
+  group_by(launch_site) %>%
+  summarize(count = n())
+
+# Filter 
+clone_summary_E1792_filtered = 
+clone_summary_E1792  %>%
+  filter(read_count >= 10) 
+```
+**Conclusion:**
+In this samples there is a lot of background noise in there, I figured filtering for 10 reads per integration should give a robust cutoff. 
+T48 --> 2 clones
+T3 --> none left (all ints had very low read counts)
+
+
+#E1828
+```{r}
+clones_E1828 = clones_int_fig1 %>% filter(experiment == "E1828")
+```
+
+##Quality controls
+```{r}
+# Annotate mapped SB arms
+clones_E1828 = clones_E1828 %>% 
+  mutate(mapped_arms = case_when(read_count_1 == 0 ~ "rv_only",
+                                 read_count_2 == 0 ~ "fw_only",
+                                 read_count_1 > 0 & read_count_2 > 0 ~ "both_arms"))
+
+
+# Number of insertions per clone
+clones_E1828 %>% group_by(launch_site, sample) %>% summarize(count = n()) %>%
+  ggplot(aes(x = sample, y = count)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ launch_site, scales = "free_x") +
+  theme_bw() +
+   theme(axis.text.x = element_text(angle = 90))
+
+clones_E1828 %>% filter(read_count >= 10) %>% group_by(launch_site, sample) %>% summarize(count = n()) %>%
+  ggplot(aes(x = sample, y = count)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ launch_site, scales = "free_x") +
+  theme_bw() +
+   theme(axis.text.x = element_text(angle = 90))
+
+
+#Which chromosomes are they
+clones_E1828 %>% group_by(launch_site, sample, chr) %>% summarize(count = n()) %>%
+  ggplot(aes(x = chr, y = count)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ launch_site, scales = "free_x") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90))
+
+#Filter for >=10 reads
+clones_E1828 %>% 
+  filter(read_count >= 10) %>% 
+  group_by(launch_site, sample, chr) %>% 
+  summarize(count = n()) %>%
+  ggplot(aes(x = chr, y = count)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ launch_site, scales = "free_x") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90))
+
+clones_E1828 %>% 
+  filter(read_count >= 10) %>% 
+  group_by(launch_site) %>% 
+  distinct(sample) %>% 
+  summarise(n = n())
+
+#Filtered tib
+clones_E1828_filtered = 
+clones_E1828 %>% 
+  filter(read_count >= 10)
+```
+**Conclusion:**
+Filtering for >=10 reads per integration displays strong enrichment for the target chromosomes.
+Number of clones with 1 or more ints when filtered:
+T48 = 28
+T3 = 12
+
+
+# Plot clones
+I collected the numbers of total clones, excised_&_reintegrated and excised_with_no_detectable_reintegration in excel and exported them as a tsv file to plot them here. 
+
+```{r}
+tib_eff_clones_combined = read_tsv("/DATA/usr/m.eder/projects/Method_paper/Lise_hop_ReIntegrate_clone_estimation/me20260409_Clones_Lise_LD20260224.tsv")
+
+#Filter out clone T201, has two integrations
+tib_eff_clones_combined = tib_eff_clones_combined %>% 
+  filter(locus != "T201")
+```
+
+
+## Add count clone count to each categroy
+```{r}
+plot_df <- tib_eff_clones_combined %>%
+  mutate(hop_frac = hopped_out_clones / total_clones,
+         reintegration_frac = clones_with_int / tagmented_clones,
+         combined_frac = hop_frac * reintegration_frac,
+         
+         fract_no_excision_fraction = 1 - hop_frac,
+         fract_exc_not_int_fraction = hop_frac * (1 - reintegration_frac),
+         fract_exc_int_fraction = combined_frac,
+         
+         fract_no_excision_count = total_clones - hopped_out_clones,
+         fract_exc_int_count = clones_with_int,
+         fract_exc_not_int_count = tagmented_clones - clones_with_int) %>%
+  select(locus,
+         fract_no_excision_fraction, fract_exc_not_int_fraction, fract_exc_int_fraction,
+         fract_no_excision_count, fract_exc_not_int_count, fract_exc_int_count) %>%
+  
+  pivot_longer(cols = -locus,
+    # We split column names into TWO parts:
+    # 1) category  → fract_exc_int / fract_exc_not_int / fract_no_excision
+    # 2) .value    → tells pivot_longer which output column to fill
+    #                ("fraction" or "count")
+    names_to = c("category", ".value"),
+
+    # Regex that splits column names like:
+    # "fract_exc_int_fraction" → ("fract_exc_int", "fraction")
+    # "fract_exc_int_count"    → ("fract_exc_int", "count")
+    #
+    # Explanation of pattern:
+    # ^(.*)_(fraction|count)$
+    #  ^        start of string
+    #  (.*)     capture EVERYTHING before last "_"
+    #           → this becomes "category"
+    #  _        literal underscore
+    #  (fraction|count)
+    #           match either "fraction" or "count"
+    #           → this becomes ".value"
+    #  $        end of string
+    names_pattern = "^(.*)_(fraction|count)$") %>%
+  mutate(category = factor(category, levels = c("fract_exc_int", "fract_exc_not_int", "fract_no_excision"),
+                           labels = c("Excised + reintegrated",
+                                      "Excised, no detectable reintegration",
+                                      "No excision")))
+
+
+
+#order based on Hopped + reintegrated number
+locus_order <- plot_df %>%
+  filter(category == "No excision") %>%
+  arrange(fraction) %>%
+  pull(locus)
+
+
+# Plot
+plot_df %>% 
+mutate(locus = factor(locus, levels = locus_order)) %>% #order based on locus
+ggplot(aes(x = locus, y = fraction, fill = category)) +
+  geom_col(width = 0.72, color = "black", linewidth = 0.25) +
+  geom_text(
+    aes(label = scales::percent(fraction, accuracy = 1)),
+    position = position_stack(vjust = 0.5),
+    size = 3
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Excised + reintegrated" = "#1B9E77",
+      "Excised, no detectable reintegration" = "#E6AB02",
+      "No excision" = "#D9D9D9")) +
+  labs(
+    x = "Locus",
+    y = "Fraction of clones",
+    fill = NULL
+  ) +
+  scale_y_continuous(expand = c(0,0)) +
+  theme_classic(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+    axis.title = element_text(face = "bold"),
+    legend.position = "bottom",
+    legend.text = element_text(size = 10),
+    panel.border = element_blank()) +
+  ggtitle("Hopping and re-integration efficiency based on clones")
+```
+
+
+
+## Plot including number of clones
+```{r}
+# Plot with clone numbers in it
+plot_df %>%
+mutate(locus = factor(locus, levels = locus_order),
+       category = factor(category, levels = c("Excised + reintegrated", 
+                                              "Excised, no detectable reintegration", 
+                                              "No excision"))) %>% #order based on locus
+ggplot(aes(x = locus, y = fraction, fill = category)) +
+  geom_col(width = 0.72, color = "black", linewidth = 0.25, position = position_stack(reverse = TRUE)) +
+  geom_text(
+    aes(label = (count)),
+    position = position_stack(vjust = 0.5, reverse = TRUE),
+    size = 3
+    ) +
+  scale_fill_manual(
+    values = c(
+      "Excised + reintegrated" = "#1B9E77",
+      "Excised, no detectable reintegration" = "#E6AB02",
+      "No excision" = "#D9D9D9")) +
+  labs(
+    x = "Locus",
+    y = "Fraction of clones",
+    fill = NULL
+  ) +
+  scale_y_continuous(expand = c(0,0)) +
+  theme_classic(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+    axis.title = element_text(face = "bold"),
+    legend.position = "bottom",
+    legend.text = element_text(size = 10),
+    panel.border = element_blank()) +
+  ggtitle("Excision and re-integration efficiency")
+```
+
+Calculate equivalent to 'transposed fraction' (for comparison to the pool-based estimates).
+Transposed fraction is excised_reintegrated/(excised_reintegrated + no_excision)
+Do this calculation based on the fractions, because those represent the whole experiment (counts are a bit off because not all excised clones were actually tagmented). 
+
+```{r}
+plot_df %>%
+  dplyr::select(-count) %>%
+  pivot_wider(names_from = category,
+              values_from = fraction) %>%
+  mutate(transposed_fraction = `Excised + reintegrated`/(`Excised + reintegrated`+`No excision`)) %>%
+  relocate(locus, transposed_fraction)
+
+```
+
+
+# Extract the clonal names of the chosen ones
+```{r}
+reliable_integrations_sel = reliable_integrations_1 %>% 
+  dplyr::select(chr, start, end, strand, sample, read_count, launch_site)
+
+clone_summary_E1792_filtered_sel = clone_summary_E1792_filtered %>% dplyr::select(chr, start, end, strand, sample, read_count, launch_site)
+
+tib_E1828_filtered_sel = clones_E1828_filtered %>% dplyr::select(chr, start, end, strand, sample, read_count, launch_site)
+
+tib_comb_selected_clones = rbind(reliable_integrations_sel, clone_summary_E1792_filtered_sel, tib_E1828_filtered_sel)
+
+# How many clones with integrations do we have
+tib_comb_selected_clones %>% group_by(launch_site) %>% distinct(sample) %>% summarise(n = n())
+
+# Distribution of integrations on chromosomes
+tib_comb_selected_clones %>% group_by(launch_site, chr) %>% summarise(n = n())
+```
+

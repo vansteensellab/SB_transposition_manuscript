@@ -1,0 +1,125 @@
+---
+title: "Untitled"
+output: html_document
+date: "2026-03-30"
+---
+# Goal
+Compute the background distribution on different bin sizes.
+Then use that to compute the zscore for each of the PB-SB integrations and the individual SB integrations.
+
+
+
+# Setup
+```{r load_libraries}
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(gtools)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggh4x)
+library(stringr)
+library(readr)
+library(knitr)
+library(cowplot)
+library(ggpubr)
+
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(Biostrings)
+library(ggseqlogo)
+library(ShortRead)
+library(GENOVA)
+
+library(ggbeeswarm)
+library(scales)
+# library(pheatmap)
+# library(ComplexHeatmap)
+library(RColorBrewer)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+
+source('/home/c.moene/projects/hopping_technology/01_genomewide_chromatin_background/CM20260330_compute_chromatin_background.R')
+```
+
+
+```{r}
+#location of the pipeline output files
+path_context_500 ='/DATA/shared/projects/local_hopping/hopping_technology/01_genomewide_chromatin_context/CM20260310_local_context/coverage_results/genomewide_background-500_summary.txt'
+path_context_2000 = '/DATA/shared/projects/local_hopping/hopping_technology/01_genomewide_chromatin_context/CM20260310_local_context/coverage_results/genomewide_background-2000_summary.txt'
+path_context_5000 = '/DATA/shared/projects/local_hopping/hopping_technology/01_genomewide_chromatin_context/CM20260310_local_context/coverage_results/genomewide_background-5000_summary.txt'
+path_context_10000 = '/DATA/shared/projects/local_hopping/hopping_technology/01_genomewide_chromatin_context/CM20260310_local_context/coverage_results/genomewide_background-5000_summary.txt'
+
+#features we want to process
+features_oi = c("'H3K9me3_pADam'", "'LB1_pADam'" , #heterochromatin
+                "'EZH2'", "'H3K27me3-2i'", #polycomb
+                "'RAD21'" , "'CTCF'", #3D genome
+                "'H3K27ac-2i'", "'p300-2i'", #euchromatin
+                "'ATAC'", "'DNase'", #accessibility
+                "'H3K36me3'", "'POLR2A'", "'TTseq_fw'", "'TTseq_rv'", #transcription
+                "'MED1'", "'H3K4me1'", "'H3K4me3'", #CRE
+                "'input_1'", "'input_2'" #input samples
+                )
+
+#load the tibbles
+context_tib_oi_500 = read_tsv(path_context_500) %>%
+  dplyr::select(any_of(c("#'chr'","'start'","'end'" , features_oi)))
+
+context_tib_oi_2000 = read_tsv(path_context_2000) %>%
+  dplyr::select(any_of(c("#'chr'","'start'","'end'" , features_oi)))
+
+context_tib_oi_5000 = read_tsv(path_context_5000) %>%
+  dplyr::select(any_of(c("#'chr'","'start'","'end'" , features_oi)))
+
+context_tib_oi_10000 = read_tsv(path_context_10000) %>%
+  dplyr::select(any_of(c("#'chr'","'start'","'end'" , features_oi)))
+
+
+blacklist_bed = read_tsv('/DATA/shared/projects/local_hopping/hopping_technology/01_genomewide_chromatin_context/encode_mm10_blacklist.v2.bed', col_names = c("chr", "start", "end", "type"))
+
+#calculate backgrounds
+background_sum_500 = chrom_background(context_tib_oi_500, 
+                                       blacklist_bed,
+                                       log_features = c("LB1_pADam", "H3K9me3_pADam"), 
+                                       non_cistrome_features = c("TTseq_fw", "TTseq_rv"),
+                                       input_cols = c("input_1", "input_2")) 
+
+
+background_sum_2000 = chrom_background(context_tib_oi_2000, 
+                                       blacklist_bed,
+                                       log_features = c("LB1_pADam", "H3K9me3_pADam"), 
+                                       non_cistrome_features = c("TTseq_fw", "TTseq_rv"),
+                                       input_cols = c("input_1", "input_2")) 
+
+background_sum_5000 = chrom_background(context_tib_oi_5000, 
+                                       blacklist_bed,
+                                       log_features = c("LB1_pADam", "H3K9me3_pADam"), 
+                                       non_cistrome_features = c("TTseq_fw", "TTseq_rv"),
+                                       input_cols = c("input_1", "input_2")) 
+
+
+background_sum_10000 = chrom_background(context_tib_oi_10000, 
+                                       blacklist_bed,
+                                       log_features = c("LB1_pADam", "H3K9me3_pADam"), 
+                                       non_cistrome_features = c("TTseq_fw", "TTseq_rv"),
+                                       input_cols = c("input_1", "input_2")) 
+
+#remove big tibbles again
+rm(context_tib_oi_500, context_tib_oi_2000, context_tib_oi_5000,context_tib_oi_10000)
+gc()
+```
+
+```{r}
+contexts_combined = bind_rows(`500` = background_sum_500, `2000` = background_sum_2000,
+                              `5000` = background_sum_5000, `10000` = background_sum_10000, .id = 'window_size')
+
+# saveRDS(contexts_combined, '/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Chromatin_context/CM20260730_summary_stats_chrom_background.rds')
+```
+
+

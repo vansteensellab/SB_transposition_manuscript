@@ -1,0 +1,13 @@
+Sample_Name	file	mate	structure	construct_type	celltype	genome
+73_LoxP_hop_Fw	6862_73_73_LoxP_hop_Fw_GCTCATGA-TAGATCGC_S86_R1_001.fastq.gz	R1	For_SB	SB	mESC	mm10
+73_LoxP_hop_Fw	6862_73_73_LoxP_hop_Fw_GCTCATGA-TAGATCGC_S86_R2_001.fastq.gz	R2	For_SB	SB	mESC	mm10
+74_NanogS_hop_Fw	6862_74_74_NanogS_hop_Fw_GCTCATGA-CTCTCTAT_S87_R1_001.fastq.gz	R1	For_SB	SB	mESC	mm10
+74_NanogS_hop_Fw	6862_74_74_NanogS_hop_Fw_GCTCATGA-CTCTCTAT_S87_R2_001.fastq.gz	R2	For_SB	SB	mESC	mm10
+75_NanogL_hop_Fw	6862_75_75_NanogL_hop_Fw_GCTCATGA-TATCCTCT_S88_R1_001.fastq.gz	R1	For_SB	SB	mESC	mm10
+75_NanogL_hop_Fw	6862_75_75_NanogL_hop_Fw_GCTCATGA-TATCCTCT_S88_R2_001.fastq.gz	R2	For_SB	SB	mESC	mm10
+148_LoxP_hop_Rv	6862_148_148_LoxP_hop_Rv_GCTCATGA-GTAAGGAG_S157_R1_001.fastq.gz	R1	Rev_SB	SB	mESC	mm10
+148_LoxP_hop_Rv	6862_148_148_LoxP_hop_Rv_GCTCATGA-GTAAGGAG_S157_R2_001.fastq.gz	R2	Rev_SB	SB	mESC	mm10
+149_NanogS_hop_Rv	6862_149_149_NanogS_hop_Rv_GCTCATGA-ACTGCATA_S158_R1_001.fastq.gz	R1	Rev_SB	SB	mESC	mm10
+149_NanogS_hop_Rv	6862_149_149_NanogS_hop_Rv_GCTCATGA-ACTGCATA_S158_R2_001.fastq.gz	R2	Rev_SB	SB	mESC	mm10
+150_NanogL_hop_Rv	6862_150_150_NanogL_hop_Rv_GCTCATGA-AAGGAGTA_S159_R1_001.fastq.gz	R1	Rev_SB	SB	mESC	mm10
+150_NanogL_hop_Rv	6862_150_150_NanogL_hop_Rv_GCTCATGA-AAGGAGTA_S159_R2_001.fastq.gz	R2	Rev_SB	SB	mESC	mm10

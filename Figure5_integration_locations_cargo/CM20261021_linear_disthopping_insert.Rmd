@@ -1,0 +1,356 @@
+---
+title: "CM20261021_linear_disthopping_insert"
+output: html_document
+date: "2026-04-10"
+---
+
+#Goal 
+Visualize the relationship between linear distance and number of integrations, for the two launch sites (Nanog_1 and Sox2_-116kb) for which we have many different cargo. 
+
+
+# Setup
+##Libraries
+Load the libraries and set the parameters.
+```{r load_libraries}
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(gtools)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggh4x)
+library(stringr)
+library(readr)
+library(knitr)
+library(cowplot)
+library(ggpubr)
+
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(Biostrings)
+library(ggseqlogo)
+library(ShortRead)
+library(GENOVA)
+library(GGally)
+
+library(ggbeeswarm)
+library(scales)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+
+```
+
+## Paths & parameters
+```{r paths_parameters}
+
+#datatag
+datetag = paste0("CM",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/home/c.moene/projects/hopping_technology/05_hopping_distribution_single_LPs/analysis_",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+```
+
+```{r knits setup}
+
+library(knitr)
+opts_chunk$set(cache = T,
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               dpi = 300,
+               fig.path = paste0(file.path(output_dir), "/distance/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+```{r}
+#cutoff to call an integration local
+distance_local_hop = 2E6
+```
+
+
+# Load data
+All single LP integration data was collected in /home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Figure5_integration_locations_cargo/CM20260401_collect_mapped_ints_single_LPs.Rmd
+Load them here
+```{r}
+all_ints_comb = read_tsv( "/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Figure5_integration_locations_cargo/CM20260104_collected_mapped_ints_all.tsv")
+
+all_ints_comb = all_ints_comb %>%
+  mutate(type = replace_na(type,'pool')) 
+
+```
+
+
+## all inserts
+Filter for WT genomic background
+```{r}
+table(all_ints_comb$LP, all_ints_comb$insert, useNA = 'ifany')
+
+
+all_local_ints = all_ints_comb %>%
+  dplyr::filter(type == "pool" & genotype == "WT") %>%
+  mutate(hopped = start != LP_coordinate,
+         dist_to_LP = case_when(chr == LP_chr ~ start - LP_coordinate,
+                                .default = NA),
+         local_hop = abs(dist_to_LP) < distance_local_hop & !is.na(dist_to_LP) & hopped) %>% #dont include unhopped ints 
+  dplyr::filter(local_hop)
+
+table(all_local_ints$LP, all_local_ints$insert, useNA = 'ifany')
+
+```
+
+There is a contamination with some clones
+
+Mathias dealt with this before for the CTCF paper, get filtered version from him.
+filtered version E2401 from CTCF paper
+```{r}
+tib_E2401_curated_strict = readRDS("/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Figure5_integration_locations_cargo/E2401_curated_strict.rds") 
+
+tib_E2401_curated_strict_ctrls = tib_E2401_curated_strict %>%
+  dplyr::mutate(insert = case_when(insert == "CBS1x_Fw_Sox2P" ~ '1xCTCF_fw_Sox2P',
+                                   insert == "CBS3x_Fw_Sox2P" ~ '3xCTCF_fw_Sox2P',
+                                   insert == "CBS3x_Rv_Sox2P" ~ '3xCTCF_rv_Sox2P',
+                                     .default = insert)) %>% 
+  filter(sample_type == "control pool") %>%
+  mutate(LP = "-116 kb",
+         LP_coordinate = 34643961,
+         LP_chr = "chr3",
+         genotype = "WT",
+         hopped = start != LP_coordinate,
+         dist_to_LP = case_when(chr == LP_chr ~ start - LP_coordinate,
+                                .default = NA),
+         local_hop = abs(dist_to_LP) < distance_local_hop & !is.na(dist_to_LP) & hopped) %>%
+  filter(experiment == "E2401")
+
+```
+
+#filtered version dataset
+add int he corretly filtered version of E2401
+and remove any launch pad contaminations, as we also did in the Science paper.
+```{r}
+all_local_ints_filt = all_local_ints %>%
+  filter(experiment != "E2401") %>%
+  bind_rows(filter(tib_E2401_curated_strict_ctrls, local_hop)) %>%
+  #standard filtering from the Sox2 paper
+    filter(!(start >= 34721183 & start <= 34721192)) %>% #remove contamination from LP8
+  filter(! start %in% c(25018987, 35232946) ) %>% #remove contamination clone C1
+  filter(landing_pad  == "C9" | start != 34598479) %>% #remove contamination from LP C9
+  filter(landing_pad  == "23" | start != 34643961) %>% #remove contamination from LP 23
+  filter(landing_pad  == "C10" | start != 35478413)  #remove contamination from LP C10
+
+```
+
+#plot fraction in regions
+Fraction in regions
+```{r }
+insert_category_cols_2 <- c(
+  "promoter" = "#1B9E77",
+  "TF reporter" = "#a6761d", #added a new color for the TF reporters in this figure
+  "CTCF" = "#7570B3",
+  "CTCF+promoter" = "#E7298A",  
+  "minimal insert" = "#666666",
+  "other" = "grey80"
+)
+
+colscale_insert_cat_2 = scale_color_manual(values = insert_category_cols_2, aesthetics = 'col')
+```
+
+## Sox2
+For the Sox2 launch site, we plot per biorep
+```{r 5D_Sox2_fract_per_region}
+plot_fract_Sox2 = filter(all_local_ints_filt, LP %in% c("-116 kb", "-161 kb", "N1")) %>%
+  mutate(insert_sample = paste0(insert, "_", experiment)) %>%
+  group_by(insert_sample) %>%
+  filter(LP == c("-116 kb")) %>%
+    filter(insert %in% c('minimal insert', 'Sox2P'))%>%
+  mutate(insert_group = case_when(grepl('Sox2P', insert)~ "promoter",
+                                  insert == 'minimal insert' ~ 'minimal insert'))%>%
+  uncount(read_count) %>%
+  mutate(region_ints = case_when(abs(dist_to_LP) < 10E3 ~ "<10kb",
+                                 abs(dist_to_LP) < 100E3 ~ "10kb-100kb",
+                                 abs(dist_to_LP) < 500E3 ~ "100kb-500kb",
+                                 abs(dist_to_LP) < 2E6 ~ "500kb-2Mb",
+                                 .default = 'problem'         
+                                 )
+  )%>%
+  mutate(region_ints = factor(region_ints, levels = c("<10kb", "10kb-100kb", "100kb-500kb", "500kb-2Mb")))%>%
+  group_by(insert_sample,insert,insert_group, region_ints)%>%
+  summarize(N = n())%>%
+  mutate(fract_ints = N/sum(N))%>%
+  ggplot(aes(x = region_ints, y = fract_ints, col = insert_group)) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.05)))+
+  geom_boxplot()+
+  geom_point(position = position_jitterdodge(jitter.width = 0.3, jitter.height = 0))+
+  theme_bw()+
+  xlab('region of integration')+
+  ylab('fraction of SB reads') + 
+  ggtitle('Sox2 locus, -116kb, per replicate')+  
+  theme(legend.position = 'bottom',
+        aspect.ratio = 1) +
+  colscale_insert_cat_2
+
+  
+filter(all_local_ints_filt, LP %in% c("-116 kb", "-161 kb", "N1")) %>%
+  mutate(insert_sample = paste0(insert, "_", experiment)) %>%
+  group_by(insert_sample) %>%
+  filter(LP == c("-116 kb")) %>%
+    filter(insert %in% c('minimal insert', 'Sox2P'))%>%
+  mutate(insert_group = case_when(grepl('Sox2P', insert)~ "promoter",
+                                  insert == 'minimal insert' ~ 'minimal insert'))%>%
+  uncount(read_count) %>%
+  mutate(region_ints = case_when(abs(dist_to_LP) < 10E3 ~ "<10kb",
+                                 abs(dist_to_LP) < 100E3 ~ "10kb-100kb",
+                                 abs(dist_to_LP) < 500E3 ~ "100kb-500kb",
+                                 abs(dist_to_LP) < 2E6 ~ "500kb-2Mb",
+                                 .default = 'problem'         
+                                 )
+  )%>%
+  mutate(region_ints = factor(region_ints, levels = c("<10kb", "10kb-100kb", "100kb-500kb", "500kb-2Mb")))%>% 
+  group_by(insert_sample,insert,insert_group, region_ints)%>%
+  summarize(N = n())%>%
+  mutate(fract_ints = N/sum(N)) %>%
+  filter(region_ints == "<10kb") %>%
+  group_by(insert) %>%
+  summarise(mean(fract_ints))
+```
+## Nanog
+For the Nanog locus, we plot per unique insert (combining bioreps)
+
+```{r 5F_fraction_in_regions_Nanog}
+plot_fract_Nanog = filter(all_local_ints_filt, LP %in% c("-116 kb", "-161 kb", "N1")) %>%
+  # mutate(insert_sample = paste0(insert, "_", experiment)) %>%
+  group_by(insert) %>%
+  filter(LP == c("N1") & ! insert %in% c("NanogS08", "NanogS10", "pMV001")) %>%
+  mutate(insert_group = case_when(grepl('Nanog', insert)~ "promoter",
+                                  grepl('pLE', insert) ~ "TF reporter",
+                                  insert == 'minimal insert' ~ insert)) %>%
+  uncount(read_count) %>%
+  mutate(region_ints = case_when(abs(dist_to_LP) < 10E3 ~ "<10kb",
+                                 abs(dist_to_LP) < 100E3 ~ "10kb-100kb",
+                                 abs(dist_to_LP) < 500E3 ~ "100kb-500kb",
+                                 abs(dist_to_LP) < 2E6 ~ "500kb-2Mb",
+                                 .default = 'problem'
+                                 )
+  )%>%
+  mutate(region_ints = factor(region_ints, levels = c("<10kb", "10kb-100kb", "100kb-500kb", "500kb-2Mb")))%>%
+  group_by(insert,insert_group, region_ints)%>%
+  summarize(N = n())%>%
+  mutate(fract_ints = N/sum(N))%>%
+  ggplot(aes(x = region_ints, y = fract_ints, col = insert_group)) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.05)))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_point(position = position_jitterdodge(jitter.width = 0.3, jitter.height = 0))+
+  theme_bw()+
+  xlab('region of integration')+
+  ylab('fraction of SB reads') + 
+  ggtitle('Nanog locus, per unique insert')+
+  theme(legend.position = 'bottom',
+        aspect.ratio = 1) +
+  colscale_insert_cat_2
+  
+
+filter(all_local_ints_filt, LP %in% c("-116 kb", "-161 kb", "N1")) %>%
+  # mutate(insert_sample = paste0(insert, "_", experiment)) %>%
+  group_by(insert) %>%
+  filter(LP == c("N1") & ! insert %in% c("NanogS08", "NanogS10", "pMV001")) %>%
+  mutate(insert_group = case_when(grepl('Nanog', insert)~ "promoter",
+                                  grepl('pLE', insert) ~ "TF reporter",
+                                  insert == 'minimal insert' ~ insert,
+                                  insert == 'pMV001' ~ 'enhancer')) %>%
+  uncount(read_count) %>%
+  mutate(region_ints = case_when(abs(dist_to_LP) < 10E3 ~ "<10kb",
+                                 abs(dist_to_LP) < 100E3 ~ "10kb-100kb",
+                                 abs(dist_to_LP) < 500E3 ~ "100kb-500kb",
+                                 abs(dist_to_LP) < 2E6 ~ "500kb-2Mb",
+                                 .default = 'problem'
+                                 )
+  )%>%
+  mutate(region_ints = factor(region_ints, levels = c("<10kb", "10kb-100kb", "100kb-500kb", "500kb-2Mb")))%>%
+  group_by(insert, insert_group, region_ints)%>%
+  summarize(N = n())%>%
+  mutate(fract_ints = N/sum(N))%>%
+  filter(region_ints == "<10kb") %>%
+  group_by(insert) %>%
+  summarise(mean(fract_ints))
+```
+
+
+```{r 5CD_fraction_in_regions_Sox2_Nanog, fig.height = 5}
+cowplot::plot_grid(plot_fract_Sox2, plot_fract_Nanog, nrow = 1,
+                   align = 'h', axis = 'tb')
+```
+
+
+## TF reporter expression
+
+Compare <10kb fraction TF reporters to their expression
+
+```{r S6B_10kb_fraction_TF_reporters, fig.width = 4, fig.height = 4}
+tib_expr_TF = readRDS('/home/c.moene/projects/hopping_technology/SB_transposition_manuscript/Figure5_integration_locations_cargo/CM20260415_fluorescence_TF_reporters.rds')
+
+tib_expr_TF_for_join = tib_expr_TF %>%
+  filter(clone == '1' & insert != "WT" ) %>%
+  mutate(insert_name_join = case_when(insert == "TP53" ~ 'tfr_p53',
+                                      .default = paste0("tfr_", tolower(insert))))
+
+
+promoter_cols <- c(
+  "NRF1" = "#1D6F8A",
+  "OCT4_SOX2" = "#1C8C8C",
+  "STAT3" = "#1B9E77",
+  "TP53" = "#4DBB96",
+  "random2" = "grey40"
+)
+
+tib_for_plot_GFP_local = 
+  filter(all_local_ints_filt, LP %in% c("-116 kb", "-161 kb", "N1")) %>%
+  mutate(insert_sample = paste0(insert, "_", experiment)) %>%
+  group_by(insert_sample) %>%
+  filter(LP == c("N1") & ! insert %in% c("NanogS08", "NanogS10", "pMV001")) %>%
+  mutate(insert_group = case_when(grepl('Nanog', insert)~ "promoter",
+                                  grepl('pLE', insert) ~ "TF reporter",
+                                  insert == 'minimal insert' ~ insert,
+                                  insert == 'pMV001' ~ 'enhancer')) %>%
+  uncount(read_count) %>%
+  mutate(region_ints = case_when(abs(dist_to_LP) < 10E3 ~ "<10kb",
+                                 abs(dist_to_LP) < 100E3 ~ "10kb-100kb",
+                                 abs(dist_to_LP) < 500E3 ~ "100kb-500kb",
+                                 abs(dist_to_LP) < 2E6 ~ "500kb-2Mb",
+                                 .default = 'problem'
+  )
+  )%>%
+  mutate(region_ints = factor(region_ints, levels = c("<10kb", "10kb-100kb", "100kb-500kb", "500kb-2Mb")))%>%
+  group_by(insert_sample, insert_group, insert_name, region_ints)%>%
+  summarize(N = n())%>%
+  mutate(fract_ints = N/sum(N))%>%
+  filter(insert_group== "TF reporter") %>%
+  mutate(insert_name_join = tolower(insert_name)) %>%
+  left_join(tib_expr_TF_for_join) %>%
+  
+  #for plotting
+  filter(region_ints == "<10kb") %>%
+  mutate(insert = factor(insert, levels = names(promoter_cols))) #order nicely for legend
+  
+
+ggplot(tib_for_plot_GFP_local, aes(x = rel_GFP_cor, y = fract_ints)) +
+  #plot data
+  geom_point(aes( col = insert)) +
+  stat_cor(label.y.npc = 'bottom', method = 'spearman') +
+  geom_smooth(method = 'lm', col = 'black')+
+  #layout
+  scale_x_continuous(limits = c(0, NA), expand = expansion(mult = c(0,0.05)))+
+  scale_y_continuous(limits = c(0,NA), expand = c(0,0), breaks = pretty_breaks(n=5)) + 
+  xlab('relative GFP fluorescence') + 
+  ylab('fraction of reads <10kb from launch pad')+
+  theme_bw() +
+  scale_color_manual(values = promoter_cols) +
+  theme(aspect.ratio = 1)
+```
+
+

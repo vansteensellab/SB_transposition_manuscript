@@ -1,0 +1,200 @@
+output_directory:
+    '/DATA/shared/projects/local_hopping/hopping_technology/01_genomewide_chromatin_context/CM20260310_local_context'
+
+summary_file:
+    genomewide_background: '/DATA/shared/projects/local_hopping/hopping_technology/01_genomewide_chromatin_context/CM20260224_random_1M_1bp_mm10.tsv'
+
+# Note that this pipeline assumes that your input summary file is a tab-separated 
+# file with header and with the following columns:
+# 1. name (barcode of the integration), needs to be called 'barcode'
+# 2. chromosome (chromosome of the integration)
+# 3. start (location of the integration)
+
+bins:
+    genomewide_background: [500, 2000, 5000, 10000]
+
+bin_for_overlap_feature: 1000000
+bin_for_nearest_feature: 1
+
+
+#### To run this pipeline this is the script that needs to be run in conda
+# cd /DATA/shared/projects/local_hopping/hopping_technology/01_genomewide_chromatin_context
+# conda activate /DATA/usr/v.franceschini/micromamba/envs/acadias_definitive_env
+# snakemake -s /DATA/pipelines/TRIP_local_context/Snakefile --configfile /DATA/shared/projects/local_hopping/hopping_technology/01_genomewide_chromatin_context/CM20260310_genomewide_background_local_context_config.yaml --cores 25
+
+#Note 2026/02/26 (CM): do not run this pipeline from the Rstudio terminal, instead access mcclintock directly via mobaxterm or similar. The Rstudio terminal gives issues and errors. 
+
+data_sources:
+    pADamID:
+        H3K9me3:
+            experiment:
+                - /DATA/usr/l.dauban/projects/pA-DamID/E2113_Del_Inv_Heterochromatin/results_mm10_nextseq_strainspecific/counts/bin-gatc/T48h20_rep1_Dam_k9me3-gatc.counts.txt.gz
+                - /DATA/usr/l.dauban/projects/pA-DamID/E2113_Del_Inv_Heterochromatin/results_mm10_nextseq_strainspecific/counts/bin-gatc/T48h20_rep2_Dam_k9me3-gatc.counts.txt.gz
+            control:
+                - /DATA/usr/l.dauban/projects/pA-DamID/E2113_Del_Inv_Heterochromatin/results_mm10_nextseq_strainspecific/counts/bin-gatc/T48h20_rep1_H3K9me3-gatc.counts.txt.gz
+                - /DATA/usr/l.dauban/projects/pA-DamID/E2113_Del_Inv_Heterochromatin/results_mm10_nextseq_strainspecific/counts/bin-gatc/T48h20_rep2_H3K9me3-gatc.counts.txt.gz
+
+    coverage:
+        acH2HAZ:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/acH2HAZ_37755_Hu.bw
+        BRD4:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/BRD4_67357_Flynn.bw
+        COREST:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/COREST_8305_Whyte.bw
+        CTCF:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/CTCF_5933_Stadler.bw
+        DNase:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/DNase_58283_Domcke.bw
+        ESRRB:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/ESRRB_408_Chen.bw
+        EZH2:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/EZH2_9082_Marks.bw
+        H1c:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/H1c_34110_Cao.bw
+        H3:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/H3_3314_Mikkelsen.bw
+        H3.3:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/H3.3_53495_Ha.bw
+        H3K27ac-serum:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/H3K27ac_58932_Domcke.bw
+        H3K27ac-2i:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/H3K27ac_66760_Cruz-Molina.bw
+        H3K27me1:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/H3K27me1_85424_Hojfeldt.bw
+        H3K27me3-2i:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/H3K27me3_74535_Cruz-Molina.bw
+        H3K27me3-serum:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/H3K27me3_9071_Marks.bw
+        H3K36me3:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/H3K36me3_9076_Marks.bw
+        H3K4me1:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/H3K4me1_74534_Cruz-Molina.bw
+        H3K4me2:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/H3K4me2_5942_Stadler.bw
+        H3K4me3:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/H3K4me3_46553_ENCODE.bw
+        H3K9me2:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/H3K9me2_69214_VonMeyenn.bw
+        H3K9me3:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/H3K9me3_9090_Marks.bw
+        HCFC1:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/HCFC1_46425_ENCODE.bw
+        HDAC1:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/HDAC1_8271_Whyte.bw
+        HDAC2:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/HDAC2_8272_Whyte.bw
+        KDM2A:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/KDM2A_2855_Blackledge.bw
+        KLF4:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/KLF4_73601_Chronis.bw
+        LSD1:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/LSD1_8303_Whyte.bw
+        MED1:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/MED1_2857_Kagey.bw
+        MED12:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/MED12_2861_Kagey.bw
+        Mi2b:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/Mi2b_8276_Whyte.bw
+        nMyc:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/n-Myc_418_Chen.bw
+        NANOG:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/NANOG_73565_Chronis.bw
+        NIPBL:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/NIPBL_2864_Kagey.bw
+        NRF1:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/NRF1_58923_Domcke.bw
+        OCT4:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/OCT4_73603_Chronis.bw
+        p300-serum:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/p300_2821_Creyghton.bw
+        p300-2i:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/p300_74532_Cruz-Molina.bw
+        POLR2A:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/POLR2A_46422_ENCODE.bw
+        PRDM14:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/PRDM14_4498_Ma.bw
+        RAD21:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/RAD21_85637_Yan.bw
+        REST:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/REST_8274_Whyte.bw
+        SOX2:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/SOX2_73602_Chronis.bw
+        TFCP2L1:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/TFCP2L1_433_Chen.bw
+        ZC3H11A:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/ZC3H11A_46426_ENCODE.bw
+        ZNF384:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/ZNF384_46427_ENCODE.bw
+        H3K9me3_pADam:
+            /DATA/usr/l.dauban/projects/pA-DamID/E2113_Del_Inv_Heterochromatin/results_mm10_nextseq_strainspecific/tracks/normalized/bin-10kb/T48h20_H3K9me3-10kb-combined.bw
+        LB1_pADam:
+            /DATA/usr/l.dauban/projects/pA-DamID/E1970_ProkDNA/2nd_round/results_mm10_nextseq_strainspecific/tracks/normalized/bin-10kb/WT_F1_LB1-10kb-combined.bw
+        TTseq_fw:
+            /DATA/shared/projects/local_hopping/hopping_technology/00_external_data/GSE209526_Timeseries_TTchemseq_SOX2-FKBP_NT_fwd.bw
+        TTseq_rv:
+            /DATA/shared/projects/local_hopping/hopping_technology/00_external_data/GSE209526_Timeseries_TTchemseq_SOX2-FKBP_NT_rev.bw
+        ATAC:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/ATAC_80533_Tastemel.bw
+        input_1:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/input/6_bw/Zeitlinger_input.bw
+        input_2:
+            /DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/input/6_bw/Young_input.bw
+
+    feature:
+        allFeatures:
+            /DATA/usr/a.kocher/genomes/mm10/gencode.vM21.annotation.gff3
+        genes:
+            /DATA/usr/a.kocher/genomes/mm10/gencode.vM21.annotation.onlyGenes.gff3
+        TSSs:
+            /DATA/usr/a.kocher/genomes/mm10/gencode.vM21.annotation.TSSs.gff3
+        PLS:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_cCREs_ES-E14_PLS.bed
+        pELS:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_cCREs_ES-E14_pELS.bed
+        dELS:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_cCREs_ES-E14_dELS.bed
+        LADs:
+            /DATA/usr/l.dauban/projects/pA-DamID/E1970_ProkDNA/2nd_round/results_mm10_nextseq_strainspecific/HMM/bin-10kb/WT_F1_LB1-10kb-combined_AD.bed.gz
+        H3K9me3:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_E14TG2a.4_H3K9me3.bed.gz
+        H3K27me3:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_E14TG2a.4_H3K27me3.bed.gz
+        H3K4me3:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_E14TG2a.4_H3K4me3.bed.gz
+        H3K4me1:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_E14TG2a.4_H3K4me1.bed.gz
+        H3K36me3:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_E14TG2a.4_H3K36me3.bed.gz
+        DNase:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_ES-E14_DNase.bed.gz
+        H3K27ac:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_ES-E14_H3K27ac.bed.gz
+        H3K9ac:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_ES-E14_H3K9ac.bed.gz
+        NANOG:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_E14TG2a.4_NANOG.bed.gz
+        POU5F1:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_E14TG2a.4_POU5F1.bed.gz
+        CTCF:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_E14TG2a.4_CTCF.bed.gz
+        CHD2:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_ES-E14_CHD2.bed.gz
+        MAFK:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_ES-E14_MAFK.bed.gz
+        EP300:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_ES-Bruce4_EP300.bed.gz
+        POLR2A:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_ES-Bruce4_POLR2A.bed.gz
+        HCFC1:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_ES-E14_HCFC1.bed.gz
+        ZNF384:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_ES-E14_ZNF384.bed.gz
+        ZC3H11A:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/ENCODE_ES-E14_ZC3H11A.bed.gz
+        SOX2:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/deWit_E14Tg2A_SOX2.bed.gz
+        STAT3:
+            /DATA/usr/a.kocher/projects/TRIP_TF_reporters/ak20240513_mESC_chromatin_data/bed/Tjian_JM8.N4_STAT3.bed.gz
+    
+chrom_sizes:
+    mm10: /DATA/data/mouse/mm10/mm10.chrom.sizes

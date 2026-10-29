@@ -1,0 +1,1129 @@
+---
+title: "CM20260401_collect_mapped_ints_single_LPs"
+output: html_document
+date: "2026-04-01"
+---
+
+
+#Goal
+In '/DATA/usr/c.moene/projects/Hopping_technology/Explore_existing_data/CM20250902_collect_hopping_data.Rmd' I started collecting all the mapped hopping data we have.
+This file turned into a messy mix of collecting files and some preliminary analysis. In /DATA/usr/c.moene/projects/Hopping_technology/Explore_existing_data/CM20251128_collect_mapped_ints_clean.Rmd I collected them cleanly again.
+Here I will add the last new data (mapped in E2916).
+
+Steps:
+collect all ints
+combine tables and save
+filter for local and save 
+
+
+##Notes
+1. I want  all data to be processed with Koen's version of the tagmap pipeline (which we currently also use), so for E1682 I re-ran the pipeline.
+This collection does not include the hopping data from the Omar clones, because they have a very different set-up (is analysed separately).
+
+2. Lise LP Nanog (now called N1) 
+Lise has annotated it in her scripts as: 122650131
+But if I map the sequence from my snapgene file to the genome the positions of the two junctions are 122653214 and 122653232.
+The mapping pipeline of Koen gives 122653234, 122653235 which matches the snapgene file (+2bp) so I will take those locations. 
+
+# Setup
+##Libraries
+Load the libraries and set the parameters.
+```{r load_libraries}
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(gtools)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggh4x)
+library(stringr)
+library(readr)
+library(knitr)
+library(cowplot)
+library(ggpubr)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+```
+
+## Paths & parameters
+
+```{r paths_parameters}
+#datatag
+datetag = paste0("CM",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/DATA/usr/c.moene/projects/Hopping_technology/Explore_existing_data/figures/analysis_",datetag,"/")
+dir.create(output_dir, showWarnings = FALSE)
+
+```
+
+```{r knits setup}
+
+library(knitr)
+opts_chunk$set(cache = T,
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               dpi = 300,
+               fig.path = paste0(file.path(output_dir))) 
+pdf.options(useDingbats = FALSE)
+```
+
+
+# Sox2 locus
+## Published
+First just load the published data. Only load the control pools
+```{r}
+#file paths
+path_tib_23_ints = "/DATA/projects/Sox2/GEO_collection/Tagmentation/still_to_upload/mapped_integrations_-116kb_Sox2P_pools.txt"
+path_tib_C9_ints = "/DATA/projects/Sox2/GEO_collection/Tagmentation/mapped_integrations_-161kb_Sox2P_pools.txt"
+path_tib_C10_ints = "/DATA/projects/Sox2/GEO_collection/Tagmentation/still_to_upload/mapped_integrations_+715kb_Sox2P_pools.txt"
+path_tib_C9_41_ints = "/DATA/projects/Sox2/GEO_collection/Tagmentation/mapped_integrations_-161kb_Sox2P_CDS_pools.txt"
+path_tib_C9_mChneg_ints = "/DATA/projects/Sox2/GEO_collection/Tagmentation/still_to_upload/mapped_integrations_-161kb_Sox2mCherrydel_Sox2P_pools.txt"
+path_CRE6_ints = "/DATA/projects/Sox2/GEO_collection/Tagmentation/mapped_integrations_short_neutral_insert.txt"
+
+
+#landing pads
+landingPad_23 <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34643961,
+                                     end = 34643962),
+                    strand = "+")
+
+landingPad_C9 <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34598479,
+                                     end = 34598480),
+                    strand = "+")
+landingPad_C10 <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 35478413,
+                                     end = 35478414      ),
+                    strand = "+")
+
+LP_tib = tibble(landing_pad = c("23", "C9", "C10"), 
+                start = c( start(landingPad_23),start(landingPad_C9), start(landingPad_C10)))
+
+
+#load the -116kb data (LP23)
+tib_23_all_data = read_tsv(path_tib_23_ints) %>%
+  filter(chr %in% paste0("chr", c(1:19, "X"))) %>%
+  mutate(chr = factor(chr, levels = paste0("chr", c(1:19, "X")))) 
+
+#the control pool in E2285 (rep3) was sequenced as 10 separate libraries, combine them into one sample
+tib_23_E2285_ctrls = tib_23_all_data %>%
+  filter(replicate == "rep3" & insert == "Sox2P" & sample_type == "control pool") %>%
+  mutate(sample_name = "Sox2P-reporter -116 kb, unsorted control pool rep3")%>%
+  group_by(chr, start, end, seq, strand, replicate, experiment, launch_pad_location, insert, genotype, sample_type, sorted_gate, pool_nr, sample_name) %>%
+  summarize(read_count = sum(read_count),
+            read_count_1 = sum(read_count_1),
+            read_count_2 = sum(read_count_2), .groups = "keep") 
+
+tib_23 = tib_23_all_data %>%
+  #select the rest of the data
+  filter(!(replicate == "rep3" & insert == "Sox2P" & sample_type == "control pool")) %>%
+  select(chr, start, end, seq, strand, replicate, experiment, launch_pad_location, insert, genotype, sample_type, sorted_gate, pool_nr, sample_name,
+         read_count, read_count_1, read_count_2)%>%
+  #add merged controls back in
+  bind_rows(tib_23_E2285_ctrls) %>%
+  #mark hopped integrations
+  mutate(hopped = start != 34643961)
+
+
+#load the -161kb data (LP C9)
+tib_C9 = read_tsv(path_tib_C9_ints) %>%
+  filter(chr %in% paste0("chr", c(1:19, "X"))) %>%
+  mutate(chr = factor(chr, levels = paste0("chr", c(1:19, "X")))) %>%
+  #combine the 2 libraries of "Sox2P-reporter -161 kb, population P1 pool1 rep2"
+  mutate(to_merge = case_when(replicate == "rep2" & insert == "Sox2P" & sorted_gate == "P1" ~ "merge",
+                              .default = sample_name)) %>%
+  mutate(sample_name = case_when(to_merge == "merge" ~ "Sox2P-reporter -161 kb, population P1 pool1 rep2",
+                             .default = sample_name)) %>%
+  group_by(chr, start, end, seq, strand, replicate, experiment, launch_pad_location, insert, genotype, sample_type, sorted_gate, pool_nr, sample_name) %>%
+  summarize(read_count = sum(read_count),
+            read_count_1 = sum(read_count_1),
+            read_count_2 = sum(read_count_2), .groups = "keep") %>%
+  #mark hopped integrations
+  mutate(hopped = start != 34598479)
+  
+#load the +715kb data (LP C10)
+tib_C10 = read_tsv(path_tib_C10_ints) %>%
+  filter(chr %in% paste0("chr", c(1:19, "X"))) %>%
+  mutate(chr = factor(chr, levels = paste0("chr", c(1:19, "X")))) %>%
+  group_by(chr, start, end, seq, strand, replicate, experiment, launch_pad_location, insert, genotype, sample_type, sorted_gate, pool_nr, sample_name) %>%
+  summarize(read_count = sum(read_count),
+            read_count_1 = sum(read_count_1),
+            read_count_2 = sum(read_count_2), .groups = "keep") %>%
+  #mark hopped integrations
+  mutate(hopped = start != 35478413)
+
+
+#load the -161kb mCh- data (LP C9)
+tib_C9_mChneg = read_tsv(path_tib_C9_mChneg_ints) %>%
+  filter(chr %in% paste0("chr", c(1:19, "X"))) %>%
+  mutate(chr = factor(chr, levels = paste0("chr", c(1:19, "X")))) %>%
+  group_by(chr, start, end, seq, strand, replicate, experiment, launch_pad_location, insert, genotype, sample_type, sorted_gate, pool_nr, sample_name) %>%
+  summarize(read_count = sum(read_count),
+            read_count_1 = sum(read_count_1),
+            read_count_2 = sum(read_count_2), .groups = "keep") %>%
+  ungroup() %>%
+  #mark hopped integrations
+  mutate(hopped = start != 34598479) 
+
+#load the -161kb mCh+ Sox2P_CDS data (C9_mCh_41)
+tib_C9_41 = read_tsv(path_tib_C9_41_ints) %>%
+  filter(chr %in% paste0("chr", c(1:19, "X"))) %>%
+  mutate(chr = factor(chr, levels = paste0("chr", c(1:19, "X")))) %>%
+  group_by(chr, start, end, seq, strand, replicate, experiment, launch_pad_location, insert, genotype, sample_type, sorted_gate, pool_nr, sample_name) %>%
+  summarize(read_count = sum(read_count),
+            read_count_1 = sum(read_count_1),
+            read_count_2 = sum(read_count_2), .groups = "keep") %>%
+  ungroup() %>%
+  #mark hopped integrations
+  mutate(hopped = start != 34598479)
+
+#load the minimal insert (CRE6) data
+tib_E2226 <- read_tsv(path_CRE6_ints) %>%
+  mutate(cell_line = "23_CRE6",
+         population = "ctrl") %>%
+  mutate(experiment = "E2226") #typo in the experiment number!
+                  
+  
+#E2226 had 10 control reactions sequenced with separate indices, here we combine them to get comparable data to the other experiments (with 1 index pair for the control pool)
+tib_E2226_comb = tib_E2226 %>%
+  group_by(cell_line, population, chr, start, end, seq, strand, experiment) %>%
+  summarize(read_count = sum(read_count),
+            read_count_1 = sum(read_count_1),
+            read_count_2 = sum(read_count_2)) %>%
+  mutate(hopped = start != 34643961)  %>%
+  mutate(launch_pad_location = "-116 kb",
+         insert_name = "CRE6",
+         insert = "minimal insert",
+         sample_type = "control pool",
+         genotype = "WT",
+        sample_name = 'CRE6 -116 kb, unsorted control pool rep1')
+
+#filter the integrations
+tib_Sox2_ctrls  <- bind_rows(tib_23, tib_C9, tib_C10, tib_C9_41, tib_C9_mChneg, tib_E2226_comb)  %>%
+  filter(sample_type == "control pool") %>%
+  #add variables used in the plotting (old names of cell lines etc) 
+  mutate(cell_line = case_when(launch_pad_location == "-116 kb" & insert == "Sox2P" ~ "23_34A",
+                               launch_pad_location == "-161 kb" & insert == "Sox2P" & genotype == "WT" ~ "C9_mCh_34",
+                               launch_pad_location == "-161 kb" & insert == "Sox2P" & genotype == "Sox2::mCherry deleted" ~ "C9_mCh-_34",
+                               launch_pad_location == "-161 kb" & insert == "Sox2P_CDS" & genotype == "WT" ~ "C9_mCh_41",
+                               launch_pad_location == "+715 kb" & insert == "Sox2P" ~ "C10_34",
+                               .default = cell_line),
+         landing_pad = case_when(launch_pad_location == "-116 kb" ~ "23",
+                                 launch_pad_location == "-161 kb" ~ "C9",
+                                 launch_pad_location == "+715 kb" ~ "C10")) %>%
+  #filter the data
+  filter(!(start >= 34721183 & start <= 34721192)) %>% #remove contamination from LP8
+  filter(! start %in% c(25018987, 35232946) ) %>% #remove contamination clone C1
+  filter(landing_pad  == "C9" | start != 34598479) %>% #remove contamination from LP C9
+  filter(landing_pad  == "23" | start != 34643961) %>% #remove contamination from LP 23
+  filter(landing_pad  == "C10" | start != 35478413) %>% #remove contamination from LP C10
+  filter(strand %in% c("+", "-")) %>%
+  mutate(LP_chr = "chr3",
+         LP_coordinate = case_when(launch_pad_location == "-116 kb" ~ 34643961,
+                                 launch_pad_location == "-161 kb" ~34598479,
+                                 launch_pad_location == "+715 kb" ~ 35478413))
+
+```
+
+
+## Unpublished
+
+E2555, Sox2_mChdel_CDS
+```{r}
+#get file locations
+E2555_rep1_ints = '/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/E2555_mapping_integrations/pipeline_results_rep1/mm10/home/insertions'
+E2555_rep2_ints = '/DATA/usr/m.eder/projects/Tn5_tagmentation/E2555/pipeline_results/mm10/home/insertions' 
+
+metadata_E2555_41_mChdel = tibble(file = dir(c(E2555_rep1_ints, E2555_rep2_ints) ,
+                   recursive = T, full.names = T)) %>%
+  mutate(sample = str_remove(basename(file), "\\..*")) %>%
+  filter(grepl("41_mCh-", sample) & grepl("_ctrl", sample))
+
+
+# Load all files
+ints_E2555_41_mChdel <- bind_rows(lapply(1:nrow(metadata_E2555_41_mChdel),
+                        function(i) {
+                          tmp <- read_tsv(metadata_E2555_41_mChdel$file[i],
+                                          col_types = cols(
+                                            .default = col_character(),
+                                            start = col_double(),
+                                            end = col_double(),
+                                            read_count = col_double(),
+                                            mapq = col_double(),
+                                            read_count_1 = col_double(),
+                                            mapq_1 = col_character(),
+                                            read_count_2 = col_double(),
+                                            mapq_2 = col_character(),
+                                          )) %>%
+                            mutate(sample = metadata_E2555_41_mChdel$sample[i])
+                        })) %>% 
+  select(-c(region_start, region_end)) %>%
+  mutate(experiment = "E2555",
+         replicate = str_extract(sample, "^rep[0-9]"))
+
+
+```
+
+MK data:
+E2285, E2292, E2401:
+E2285 (23 LP) (3 MK cell lines and 23_34A, which is already in published data)
+E2292 (-39 LP) (5 cell lines, including 1x ME034)
+E2401 (23 LP) (3 MK cell lines)
+```{r}
+metadata_E2285 = tibble(file = dir("/DATA/usr/m.eder/projects/Tn5_tagmentation/E2285/pipeline_results/mm10/hopping/insertions_ref",
+                                   recursive = T, full.names = T) 
+) %>%
+  dplyr::mutate(sample = stringr::str_remove(basename(file), "\\..*"),
+                experiment = "E2285") %>%
+  filter(!grepl("34A", sample)) %>% #23_34A from this experiment already included in the published int tables above
+  filter(grepl("_ctrl_", sample))
+
+metadata_E2292 = tibble(file = dir( "/DATA/usr/m.eder/projects/Tn5_tagmentation/E2292/pipeline_results/mm10/home/insertions",
+                                   recursive = T, full.names = T)) %>% 
+  dplyr::mutate(sample = stringr::str_remove(basename(file), "\\..*"),
+                experiment = "E2292") %>%
+  filter(grepl("_CTRL_", sample))
+
+metadata_E2401 = tibble(file = dir(MappingDataDir_E2401 <- "/DATA/usr/c.moene/projects/Hopping_CTCF_Sox2_mTurq/E2401_mapping_integrations/pipeline_output/mm10/hopping/insertions_ref",
+                                   recursive = T, full.names = T) 
+) %>%
+  dplyr::mutate(sample = stringr::str_remove(basename(file), "\\..*"),
+                experiment = "E2401") %>%
+  filter(grepl("_ctrl", sample))
+  
+metadata_E2285_E2292_E2401 = bind_rows(metadata_E2285, metadata_E2292, metadata_E2401)
+
+# Load all files
+ints_E2285_E2292_E2401 <- bind_rows(lapply(1:nrow(metadata_E2285_E2292_E2401),
+                        function(i) {
+                          tmp <- read_tsv(metadata_E2285_E2292_E2401$file[i],
+                                          col_types = cols(
+                                            .default = col_character(),
+                                            start = col_double(),
+                                            end = col_double(),
+                                            read_count = col_double(),
+                                            mapq = col_double(),
+                                            read_count_1 = col_double(),
+                                            mapq_1 = col_character(),
+                                            read_count_2 = col_double(),
+                                            mapq_2 = col_character(),
+                                          )) %>%
+                            mutate(sample = metadata_E2285_E2292_E2401$sample[i],
+                                   experiment = metadata_E2285_E2292_E2401$experiment[i])
+                        })) %>% 
+  select(-c(region_start, region_end)) 
+
+#the control pool in E2285 (rep3) and E2292 was sequenced as 10 separate libraries, combine them into one sample
+tib_E2285_E2292_ctrls = ints_E2285_E2292_E2401 %>%
+  filter(experiment %in% c("E2285", "E2292")) %>%
+  mutate(sample = str_remove(sample,"_[0-9]*$")) %>%
+  group_by(chr, start, end, seq, strand, experiment, sample) %>%
+  summarize(read_count = sum(read_count),
+            read_count_1 = sum(read_count_1),
+            read_count_2 = sum(read_count_2), .groups = "keep") %>%
+  ungroup()
+
+ints_E2285_E2292_E2401_comb = ints_E2285_E2292_E2401 %>%
+  filter(!experiment %in% c("E2285", "E2292")) %>%
+  bind_rows(tib_E2285_E2292_ctrls)
+
+
+```
+
+A1 LP
+E2138 (the 23_34A data from this experiment is already in the published tibble)
+```{r}
+metadata_E2138 = tibble(file = dir("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/E2138_mapping_integrations/pipeline_results/mm10/hopping/insertions_ref",
+                                   recursive = T, full.names = T) 
+) %>%
+  dplyr::mutate(sample = stringr::str_remove(basename(file), "\\..*"),
+                experiment = "E2138") %>%
+  filter(grepl("A1_ctrl", sample))
+
+# Load all files
+ints_E2138_A1 <- bind_rows(lapply(1:nrow(metadata_E2138),
+                        function(i) {
+                          tmp <- read_tsv(metadata_E2138$file[i],
+                                          col_types = cols(
+                                            .default = col_character(),
+                                            start = col_double(),
+                                            end = col_double(),
+                                            read_count = col_double(),
+                                            mapq = col_double(),
+                                            read_count_1 = col_double(),
+                                            mapq_1 = col_character(),
+                                            read_count_2 = col_double(),
+                                            mapq_2 = col_character(),
+                                          )) %>%
+                            mutate(sample = metadata_E2138$sample[i],
+                                   experiment = metadata_E2138$experiment[i])
+                        })) %>% 
+  select(-c(region_start, region_end)) 
+```
+
+DelDE and CTCF
+DelDE: E2282,E2345 (bad sequencing?), E2347 (includes some CTCF)
+
+For now: don't use E2345, because the sequencing was very bad and integration mapping only worked properly when I trimmed the reads further
+Note that E2347 contained 20 control tagmentations, instead of 10 (I think)
+```{r}
+
+metadata_E2282 = tibble(file = dir("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/E2282_mapping_integrations_delDE/pipeline_output/mm10/hopping/insertions_ref",
+                                   recursive = T, full.names = T) 
+) %>%
+  dplyr::mutate(sample = stringr::str_remove(basename(file), "\\..*"),
+                experiment = "E2282") %>%
+  filter(!grepl("23_34A_WT",sample)) %>% #is already in the published data
+  filter(!grepl("trim",sample)) %>%
+  filter(grepl("_ctrl", sample))
+
+metadata_E2347 = tibble(file = dir("/DATA/usr/m.eder/projects/Tn5_tagmentation/E2347/pipeline_results/mm10/hopping/insertions_ref",
+                                   recursive = T, full.names = T) ) %>%
+  dplyr::mutate(sample = stringr::str_remove(basename(file), "\\..*"),
+                experiment = "E2347") %>%
+  filter(grepl("ctrl", sample))
+
+
+```
+
+CTCF
+```{r}
+metadata_E1665 =  tibble(file = dir("/DATA/usr/m.eder/projects/Tn5_tagmentation/E1665_SB_mapping/Analysis_ME20220906_Pipeline/Results/mm10/hopping/insertions_ref",
+                                   recursive = T, full.names = T) ) %>%
+  dplyr::mutate(sample = stringr::str_remove(basename(file), "\\..*"),
+                experiment = "E1665") %>%
+  filter(grepl("befFACS", sample))
+
+metadata_E2226 =  tibble(file = dir("/DATA/usr/m.eder/projects/Tn5_tagmentation/E2226/pipeline_results/mm10/hopping/insertions_ref",
+                                   recursive = T, full.names = T) ) %>%
+  dplyr::mutate(sample = stringr::str_remove(basename(file), "\\..*"),
+                experiment = "E2226") %>%
+  filter(grepl("non_sorted", sample)) %>%
+  filter(!grepl("CRE6", sample)) #is already in  published data
+
+
+```
+
+CTCF (besides above)
+E1665 befFACS_hop (only 3 reactions, so prob not so much)
+E2226 (4 cell lines)
+-> it seems that all other CTCF experiments don't contain unsorted controls
+
+```{r}
+#load the integrations
+metadata_CTCF_delDE = bind_rows(metadata_E2282, metadata_E2347, metadata_E1665, metadata_E2226)
+
+ints_CTCF_delDE <- bind_rows(lapply(1:nrow(metadata_CTCF_delDE),
+                        function(i) {
+                          tmp <- read_tsv(metadata_CTCF_delDE$file[i],
+                                          col_types = cols(
+                                            .default = col_character(),
+                                            start = col_double(),
+                                            end = col_double(),
+                                            read_count = col_double(),
+                                            mapq = col_double(),
+                                            read_count_1 = col_double(),
+                                            mapq_1 = col_character(),
+                                            read_count_2 = col_double(),
+                                            mapq_2 = col_character(),
+                                          )) %>%
+                            mutate(sample = metadata_CTCF_delDE$sample[i],
+                                   experiment = metadata_CTCF_delDE$experiment[i])
+                        })) %>% 
+  select(-c(region_start, region_end)) 
+
+#Need to pool ctrls for E2226 and E1665, because they were sequenced as separate libraries
+tib_combine_ctrls = ints_CTCF_delDE %>%
+  filter(experiment %in% c("E2226", "E1665")) %>%
+  mutate(sample = str_remove(sample,"_[0-9]*$")) %>%
+  group_by(chr, start, end, seq, strand, experiment, sample) %>%
+  summarize(read_count = sum(read_count),
+            read_count_1 = sum(read_count_1),
+            read_count_2 = sum(read_count_2), .groups = "keep") %>%
+  ungroup()
+
+ints_CTCF_delDE_comb = ints_CTCF_delDE %>%
+  filter(!experiment %in% c("E2226", "E1665")) %>%
+  bind_rows(tib_combine_ctrls)
+```
+
+
+Combine all, and annotate + filter
+```{r}
+tib_ints_unpub = bind_rows(ints_E2555_41_mChdel, ints_E2285_E2292_E2401_comb, ints_E2138_A1, ints_CTCF_delDE_comb) %>%
+  mutate(landing_pad = case_when(sample == "A1_ctrl" ~ "A1",
+                                 experiment == "E2292" ~ "8",
+                                 experiment == "E2555" ~ "C9",
+                                 .default = "23"),
+         genotype = case_when(grepl("D2", sample) ~ "delD2",
+                              grepl("E12", sample) ~ "delE12",
+                              grepl("mCh-", sample) ~ "Sox2::mCherry deleted",
+                              .default = "WT"),
+         insert_name = case_when(grepl("41", sample) ~ "41",
+                                 grepl("MK01", sample) ~ "MK01",
+                                 grepl("MK02", sample) ~ "MK02",
+                                 grepl("MK03", sample) ~ "MK03",
+                                 grepl("MK2", sample) ~ "MK02",
+                                 grepl("MK3", sample) ~ "MK03",
+                                 grepl("34", sample) ~ "34",
+                                 sample == "A1_ctrl" ~ "34",
+                                 genotype %in% c("delD2", "delE12") ~ "34",
+                                 experiment == "E1665" ~ "CBS16",
+                                 grepl("CRE", sample) ~ "CRE6",
+                                 grepl("16A", sample) ~ "16A",
+                                 grepl("3xCTCF", sample) ~ "3xCTCF",
+                                 grepl("CBS16", sample) ~ "CBS16",
+                                 sample == "CTCF_ctrl_20" ~ "3xCTCF",
+                                 .default = "unknown"
+                                 ),
+         insert = case_when(insert_name == "34" ~ "Sox2P",
+                            insert_name == "41" ~ "Sox2P_CDS",
+                            insert_name %in% c("16A", "CBS16") ~ "1xCTCF_rv", #check with Mathias, I'm 90% sure they are both in rv orientation
+                            insert_name == "3xCTCF" ~ "3xCTCF_fw",
+                            insert_name == "CRE6" ~ "minimal insert", 
+                            insert_name == "MK01" ~ "3xCTCF_fw_Sox2P",
+                            insert_name == "MK02" ~ "3xCTCF_rv_Sox2P",
+                            insert_name == "MK03" ~ "1xCTCF_fw_Sox2P"
+                            )) %>%
+  filter(landing_pad  == "8" |!(start >= 34721183 & start <= 34721192)) %>% #remove contamination from LP8
+  filter(! start %in% c(25018987, 35232946) ) %>% #remove contamination clone C1
+  filter(landing_pad  == "C9" | start != 34598479) %>% #remove contamination from LP C9
+  filter(landing_pad  == "23" | start != 34643961) %>% #remove contamination from LP 23
+  filter(landing_pad  == "C10" | start != 35478413) %>% #remove contamination from LP C10
+  filter(strand %in% c("+", "-")) %>%
+  mutate(LP_chr = "chr3",
+         LP_coordinate = case_when(landing_pad == "23" ~ 34643961,
+                                 landing_pad == "C9" ~34598479,
+                                 landing_pad == "A1" ~ 34754848, 
+                                 landing_pad == "8"   ~ 34721183),
+         launch_pad_location = case_when(landing_pad == "23" ~ "-116 kb",
+                        landing_pad == "C9" ~ "-161 kb",
+                        landing_pad == "8" ~ "-39 kb",
+                        landing_pad == "A1" ~ "in SCR"))
+```
+
+```{r}
+table(tib_ints_unpub$sample, tib_ints_unpub$experiment)
+
+table(tib_ints_unpub$insert, tib_ints_unpub$landing_pad)
+
+```
+note: A1 has very little enrichment on chr3
+
+
+## combine all Sox2 data
+```{r}
+all_ints_Sox2 = bind_rows(tib_ints_unpub, tib_Sox2_ctrls) %>%
+  mutate(hopped = start != LP_coordinate,
+         LP = launch_pad_location,
+         CTCF_orientation = case_when(grepl("fw", insert) ~ "CTCF_fw",
+                                      grepl("rv", insert) ~ "CTCF_rv",
+                                      .default = "no_CTCF"),
+         insert_group = case_when(grepl("Sox2P", insert) ~ "reporter",
+                                  grepl("CTCF", insert) ~ "CTCF_only",
+                                  insert == "CRE6" ~ "minimal insert")) %>%
+  mutate(LP = factor(LP, levels = c("-161 kb", "-116 kb", "-39 kb", "in SCR", "+715 kb"))) %>%
+  select(-sample_type, -sorted_gate, -pool_nr, -population)
+
+
+all_ints_Sox2_for_plot = all_ints_Sox2 %>%
+  #take only hops on same chr
+  filter(chr == LP_chr) %>%
+  mutate(dist_from_LP = start - LP_coordinate,#this works because it is only on same chr
+         abs_dist_from_LP = abs(dist_from_LP))
+
+Sox2_LPs = tibble(landing_pad = c("C9", "23", "8", "A1", "C10")) %>%
+  mutate(LP_coordinate = case_when(landing_pad == "23" ~ 34643961,
+                                   landing_pad == "C9" ~34598479,
+                                   landing_pad == "A1" ~ 34754848, 
+                                   landing_pad == "8"   ~ 34721183,
+                                   landing_pad == "C10" ~ 35478413),
+         launch_pad_location = case_when(landing_pad == "23" ~ "-116 kb",
+                                         landing_pad == "C9" ~ "-161 kb",
+                                         landing_pad == "8" ~ "-39 kb",
+                                         landing_pad == "A1" ~ "in SCR",
+                                         landing_pad == "C10" ~ "+715 kb"),
+         LP = launch_pad_location) %>%
+  mutate(LP = factor(LP, levels = c("-161 kb", "-116 kb", "-39 kb", "in SCR", "+715 kb"))) 
+```
+
+# Nanog locus
+## Christine
+
+```{r}
+MappingDataDir_E1962<- "/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/E1962_mapping_integrations/Pipeline_Results_LPincluded/mm10/hopping/insertions_ref"
+
+# List all files
+metadata_E1962 <- tibble(file = dir(MappingDataDir_E1962, 
+                   recursive = TRUE,full.names = TRUE)) %>%
+  filter(grepl("insertions", file)) %>%
+  mutate(sample = str_remove(basename(file), "\\.txt*"))
+  
+# Load all files
+ints_E1962 <- bind_rows(lapply(1:nrow(metadata_E1962),
+                        function(i) {
+                          tmp <- read_tsv(metadata_E1962$file[i],
+                                          col_types = cols(
+                                            .default = col_character(),
+                                            start = col_double(),
+                                            end = col_double(),
+                                            # gap_concordance = col_double(),
+                                            read_count = col_double(),
+                                            mapq = col_double(),
+                                            read_count_1 = col_double(),
+                                            mapq_1 = col_character(),
+                                            read_count_2 = col_double(),
+                                            mapq_2 = col_character(),
+                                            # sump = col_double(),
+                                            # p_adj = col_double()
+                                          )) %>%
+                            mutate(sample = metadata_E1962$sample[i])
+                        })) %>%
+  dplyr::select(-c(region_start, region_end)) %>%
+  mutate(experiment = "E1845", #experiment of the actual hopping experiment
+         insert = case_when(sample == "LoxP_hop" ~ "minimal insert",
+                            sample == "NanogS_hop" ~ "NanogS02",  #pCM002: NanogS with LBR
+                            sample == "NanogL_hop" ~ "NanogL03"), #pCM003: NanogL with LBR
+         insert_name = case_when(sample == "LoxP_hop" ~ "LoxP",
+                                 insert == "NanogS02" ~ "pCM002",
+                                 insert == "NanogL03" ~ "pCM003"),
+         techrep = "rep1", #I sequenced a second techrep from the same hopped pools below in E2913
+         LP = "N1") %>%
+    mutate(LP_chr = "chr6",
+         LP_coordinate = 122653234)  
+```
+
+```{r}
+MappingDataDir_E2048<- "/DATA/usr/c.moene/projects/Single_cell_hopping/E2048_tagmentation_BC_hop_trial1/Pipeline_Results_LPincluded/mm10/hopping/insertions_ref/"
+
+# List all files
+metadata_E2048 <- tibble(file = dir(MappingDataDir_E2048, 
+                   recursive = T, full.names = T)) %>%
+  # filter(grepl("insertions_ref", file)) %>%
+  mutate(sample = str_remove(basename(file), "\\..*"))
+
+# Load all files
+ints_E2048 <- bind_rows(lapply(1:nrow(metadata_E2048),
+                        function(i) {
+                          tmp <- read_tsv(metadata_E2048$file[i],
+                                          col_types = cols(
+                                            .default = col_character(),
+                                            start = col_double(),
+                                            end = col_double(),
+                                            # gap_concordance = col_double(),
+                                            read_count = col_double(),
+                                            mapq = col_double(),
+                                            read_count_1 = col_double(),
+                                            mapq_1 = col_character(),
+                                            read_count_2 = col_double(),
+                                            mapq_2 = col_character(),
+                                            # sump = col_double(),
+                                            # p_adj = col_double()
+                                          )) %>%
+                            mutate(sample = metadata_E2048$sample[i])
+                        })) %>%
+  select(-c(region_start, region_end)) %>%
+  mutate(experiment = "E2048",
+         insert = case_when(sample %in% paste0("P", c(31:33, 37:39)) ~ "NanogS08", #pCM008
+                                   sample %in% paste0("P", c(1:6, 43:45, 49:51)) ~ "NanogS10"),  #pCM010
+         LP = "N1") %>%
+    mutate(LP_chr = "chr6",
+         LP_coordinate = 122653234)  
+         
+
+```
+
+In E2913 I (re)mapped a collection of different experiments.
+```{r}
+MappingDataDir_E2913 <- "/DATA/usr/c.moene/projects/Hopping_technology/E2913_mapping_integrations_E1845_E2866_E2902_and_others/pipeline_results/mm10/hopping/insertions_ref"
+
+# List all files
+metadata_E2913 <- tibble(file = dir(MappingDataDir_E2913, 
+                   recursive = T, full.names = T)) %>%
+  # filter(grepl("insertions_ref", file)) %>%
+  mutate(sample = str_remove(basename(file), "\\..*"))
+
+# Load all files
+ints_E2913_tmp <- bind_rows(lapply(1:nrow(metadata_E2913),
+                        function(i) {
+                          tmp <- read_tsv(metadata_E2913$file[i],
+                                          col_types = cols(
+                                            .default = col_character(),
+                                            start = col_double(),
+                                            end = col_double(),
+                                            # gap_concordance = col_double(),
+                                            read_count = col_double(),
+                                            mapq = col_double(),
+                                            read_count_1 = col_double(),
+                                            mapq_1 = col_character(),
+                                            read_count_2 = col_double(),
+                                            mapq_2 = col_character(),
+                                            # sump = col_double(),
+                                            # p_adj = col_double()
+                                          )) %>%
+                            mutate(sample = metadata_E2913$sample[i])
+                        })) 
+
+ints_E2913 = ints_E2913_tmp %>%
+  select(-c(region_start, region_end)) %>%
+  mutate(experiment = str_extract(sample, "E....")) %>%
+  dplyr::filter(! experiment %in% c("E2866", "E2729")) %>% # E2866  are sorted for GFP-, cannot be used as completely unsorted sample; E2729 are some clones from martijn, irrelevant here
+  mutate(sample_new = str_remove(sample, "_unsorted"), 
+         insert_tmp = str_remove(sample_new, "^.*_"),
+         insert_name = case_when(insert_tmp == "NanogS" ~ "pCM002",
+                                 insert_tmp == "NanogL" ~ "pCM003",
+                                 insert_tmp == "NRF1" ~ "TFR_NRF1",
+                                 insert_tmp == "P53" ~ "TFR_P53",
+                                 insert_tmp == "OCT4SOX2" ~ "TFR_Oct4_Sox2",
+                                 insert_tmp == "Random2" ~ "TFR_Random2",
+                                 insert_tmp == "STAT3" ~ "TFR_STAT3",
+                                 .default = insert_tmp),
+         insert = case_when(insert_tmp == "LoxP" ~ "minimal insert",
+                            insert_tmp == "NanogS" ~ "NanogS02",
+                            insert_tmp == "NanogL" ~ "NanogL03",
+                            insert_tmp == "NRF1" ~ "pLE011",
+                            insert_tmp == "P53" ~ "pLE006",
+                            insert_tmp == "OCT4SOX2" ~ "pLE007",
+                            insert_tmp == "Random2" ~ "pLE009",
+                            insert_tmp == "STAT3" ~ "pLE005"
+         ),
+         techrep = case_when(experiment == "E1845" ~ "rep2"),
+         LP = "N1",
+         LP_chr = "chr6",
+         LP_coordinate = 122653234
+  ) 
+         
+
+```
+
+
+
+## Martijn
+E2288, there are two sorted pools, each tagmented 5 times
+```{r}
+
+MappingDataDir_E2288<- '/DATA/usr/m.verkuilen/Projects/project96_enhancer_hopping/E2288_mv20230717_tagmap/pipeline_output2/mm10/hopping/insertions_ref'
+
+# List all files
+metadata_E2288 <- tibble(file = dir(MappingDataDir_E2288, 
+                   recursive = T, full.names = T)) %>%
+  # filter(grepl("insertions_ref", file)) %>%
+  mutate(sample = str_remove(basename(file), "\\..*")) %>%
+  filter(sample %in% paste0("MVP", 1:10))
+
+
+ints_E2288 <- bind_rows(lapply(1:nrow(metadata_E2288),
+                        function(i) {
+                          tmp <- read_tsv(metadata_E2288$file[i],
+                                          col_types = cols(
+                                            .default = col_character(),
+                                            start = col_double(),
+                                            end = col_double(),
+                                            # gap_concordance = col_double(),
+                                            read_count = col_double(),
+                                            mapq = col_double(),
+                                            read_count_1 = col_double(),
+                                            mapq_1 = col_character(),
+                                            read_count_2 = col_double(),
+                                            mapq_2 = col_character(),
+                                            # sump = col_double(),
+                                            # p_adj = col_double()
+                                          )) %>%
+                            mutate(sample = metadata_E2288$sample[i])
+                        })) %>%
+  select(-c(region_start, region_end)) %>%
+  mutate(experiment = "E2288",
+         insert = "pMV001",
+         LP = "N1") %>%
+    mutate(LP_chr = "chr6",
+         LP_coordinate = 122653234)
+
+ints_E2288_grouped = ints_E2288 %>%
+  mutate(sample_group = case_when(sample %in% paste0("MVP", 1:5) ~ "MVP_C1",
+                                  sample %in% paste0("MVP", 6:10) ~ "MVP_C6")) %>%
+  group_by(chr, start, end, seq, strand, experiment, insert, LP, LP_chr, LP_coordinate, sample_group) %>%
+  summarize(read_count = sum(read_count), read_count_1 = sum(read_count_1), read_count_2 = sum(read_count_2))%>%
+  mutate(sample = sample_group)
+
+```
+
+
+Martijn's E2703, this is a relatively less complex pool (it is sorted for being hopped, we can estimate the maximum complexity from labguru). Consider if we should filter these for at least 2 reads per int. 
+Estimated complexity (see E2694):
+Transfected ~3M cells with SB transposases
+At sorting GFP+ signal, 0.036% of cells were GFP+
+0.00036*3M = 1080 cell complexity of hopped sorted cells (of which we estimate ~half have a reinsertion)
+
+This experiment cannot be used for hopping efficiency estimation because it is sorted for hopping out (but sorting was not pure). However, it is not sorted for a biological phenotype so it can still tell us about the hopping distribution.
+
+
+```{r}
+MappingDataDir_E2703<- '/DATA/usr/m.verkuilen/Projects/project96_enhancer_hopping/E2703_tagmap_fluorescent_hop/mv20250815_re-analyzed/pipeline_output/mm10/hopping/insertions_ref'
+
+# List all files
+metadata_E2703 <- tibble(file = dir(MappingDataDir_E2703, 
+                   recursive = T, full.names = T)) %>%
+  # filter(grepl("insertions_ref", file)) %>%
+  mutate(sample = str_remove(basename(file), "\\..*")) %>% 
+  filter(grepl("Uns", sample))
+
+
+
+ints_E2703 <- bind_rows(lapply(1:nrow(metadata_E2703),
+                        function(i) {
+                          tmp <- read_tsv(metadata_E2703$file[i],
+                                          col_types = cols(
+                                            .default = col_character(),
+                                            start = col_double(),
+                                            end = col_double(),
+                                            # gap_concordance = col_double(),
+                                            read_count = col_double(),
+                                            mapq = col_double(),
+                                            read_count_1 = col_double(),
+                                            mapq_1 = col_character(),
+                                            read_count_2 = col_double(),
+                                            mapq_2 = col_character(),
+                                            # sump = col_double(),
+                                            # p_adj = col_double()
+                                          )) %>%
+                            mutate(sample = metadata_E2703$sample[i])
+                        })) %>%
+  select(-c(region_start, region_end)) %>%
+  mutate(experiment = "E2703",
+         insert = "pMV001", #CHECK THIS
+         LP = "N2") %>%
+    mutate(LP_chr = "chr6",
+         LP_coordinate = 122702875) #Based on home read mapping, check this!
+
+ints_E2703_grouped = ints_E2703 %>%
+  mutate(sample_group = "E2703_Uns") %>%
+  group_by(chr, start, end, seq, strand, experiment, insert, LP, LP_chr, LP_coordinate, sample_group) %>%
+  summarize(read_count = sum(read_count), read_count_1 = sum(read_count_1), read_count_2 = sum(read_count_2))
+
+ints_E2703_filtered = ints_E2703_grouped %>%
+  filter(read_count >= 2) %>%
+  mutate(sample = sample_group)
+```
+
+### clones
+The first round of clones (E2288) is useless because there were so few hopped clones.
+However, in the second round (E2409) Martijn had 331 clones of which ~half had integrations. I load those here as well
+
+```{r}
+MappingDataDir_E2409 = '/DATA/usr/m.verkuilen/Projects/project96_enhancer_hopping/E2409_CM2253_tagmap/pipeline_output/mm10/hopping/insertions_ref'
+
+# List all files
+metadata_E2409 <- tibble(file = dir(MappingDataDir_E2409, 
+                   recursive = T, full.names = T)) %>%
+  # filter(grepl("insertions_ref", file)) %>%
+  mutate(sample = str_remove(basename(file), "\\..*")) 
+
+#split pools and clones
+metadata_E2409_clones = metadata_E2409 %>%
+  filter(grepl("cl", sample)) %>%
+  filter(sample != "cl223") #empty file, gives issues in the parsing below
+
+metadata_E2409_pools = metadata_E2409 %>%
+  filter(grepl("plP", sample))
+#there is also a non-template control, I don't need that sample
+
+#clones are mapped only from one side
+ints_E2409_clones <- bind_rows(lapply(1:nrow(metadata_E2409_clones),
+                        function(i) {
+                          tmp <- read_tsv(metadata_E2409_clones$file[i],
+                                          col_types = cols(
+                                            .default = col_character(),
+                                            start = col_double(),
+                                            end = col_double(),
+                                            # gap_concordance = col_double(),
+                                            read_count = col_double(),
+                                            mapq = col_double(),
+                                            # read_count_1 = col_double(),
+                                            # mapq_1 = col_character(),
+                                            # read_count_2 = col_double(),
+                                            # mapq_2 = col_character(),
+                                            # sump = col_double(),
+                                            # p_adj = col_double()
+                                          )) %>%
+                            mutate(sample = metadata_E2409_clones$sample[i])
+                        })) %>%
+  mutate(type = "clone")
+
+#pools are mapped only from both sides
+ints_E2409_pools <- bind_rows(lapply(1:nrow(metadata_E2409_pools),
+                        function(i) {
+                          tmp <- read_tsv(metadata_E2409_pools$file[i],
+                                          col_types = cols(
+                                            .default = col_character(),
+                                            start = col_double(),
+                                            end = col_double(),
+                                            read_count = col_double(),
+                                            mapq = col_double(),
+                                            read_count_1 = col_double(),
+                                            mapq_1 = col_character(),
+                                            read_count_2 = col_double(),
+                                            mapq_2 = col_character(),
+                                          )) %>%
+                            mutate(sample = metadata_E2409_pools$sample[i])
+                        })) %>%
+  mutate(type = "pool")
+
+#all pool samples come from the same 520 cell pool (sorted for GFP+), so combine all indices here
+ints_E2409_pools_grouped = ints_E2409_pools %>%
+  filter(!sample %in% c("plP5-2", "plP6-2")) %>% #these appear to be separate PCRs on the same enrichment, so not more information just PCR duplicates
+  group_by(chr, start, end, seq, strand, type) %>%
+  summarize(read_count = sum(read_count),
+            read_count_1 = sum(read_count_1),
+            read_count_2 = sum(read_count_2)) %>%
+  mutate(sample = "unsorted_pool")
+
+
+ints_E2409 = bind_rows(ints_E2409_clones, ints_E2409_pools_grouped) %>%
+  select(-c(region_start, region_end)) %>%
+  mutate(experiment = "E2409",
+         insert = "pMV001",
+         LP = "N2") %>%
+  mutate(LP_chr = "chr6",
+         LP_coordinate = 122702875) #Based on home read mapping, check this!
+
+ints_E2409_filtered = ints_E2409 %>%
+  filter((type == "pool" & read_count >= 2) | #~500 cell pool is exhaustively sequenced, so filter for at least 2 reads
+           (type == "clone" & read_count >= 10)) #more strict than Lise's data, because sequenced deeper
+
+#we expect there to be overlap between pools and clones, since they come from the same hopped pool
+# we really only want to see each unique integration once
+ints_E2409_filtered %>%
+  group_by(chr, start, strand) %>%
+  summarize(N_samples_found = n()) %>%
+  mutate(genotype = "WT")
+
+ints_E2409_unique = ints_E2409_filtered %>%
+  group_by(chr, start, end, seq, strand, experiment, insert, LP, LP_chr, LP_coordinate) %>%
+  summarize(read_count = sum(read_count))
+
+#E2409 is a bit different from the other experiments (pools and clones from the same hopping, lot's of redundancy), so I'd rather keep it separate to keep my combined tibble easier to interpret
+# write_tsv(ints_E2409_filtered, "/DATA/usr/c.moene/projects/Hopping_technology/Explore_existing_data/rds/CM20250916_E2409_filtered_ints.tsv")
+```
+
+
+# Lise's data
+
+```{r}
+MappingDataDir_E1682 <- "/DATA/usr/c.moene/projects/Hopping_technology/E1682_Lise_reprocess/pipeline_output/mm10/home/insertions"
+
+# List all files
+metadata_E1682 <- tibble(file = dir(MappingDataDir_E1682, 
+                   recursive = T, full.names = T)) %>%
+  # filter(grepl("insertions_ref", file)) %>%
+  mutate(sample = str_remove(basename(file), "\\..*"))
+
+# Load all files
+ints_E1682 <- bind_rows(lapply(1:nrow(metadata_E1682),
+                        function(i) {
+                          tmp <- read_tsv(metadata_E1682$file[i],
+                                          col_types = cols(
+                                            .default = col_character(),
+                                            start = col_double(),
+                                            end = col_double(),
+                                            # gap_concordance = col_double(),
+                                            read_count = col_double(),
+                                            mapq = col_double(),
+                                            # read_count_1 = col_double(),
+                                            # mapq_1 = col_character(),
+                                            # read_count_2 = col_double(),
+                                            # mapq_2 = col_character(),
+                                            # sump = col_double(),
+                                            # p_adj = col_double()
+                                          )) %>%
+                            mutate(sample = metadata_E1682$sample[i])
+                        }))%>%
+  mutate(experiment = "E1682")
+
+```
+
+
+E1792 and E1828 were analysed with Koen's pipeline in the paper, I took code from Lise's github for loading those files
+```{r}
+
+#E1792 and E1828 Tdgf big LAD
+metadata_E1792_E1828 <- dplyr::tibble(file = dir("/DATA/usr/k.rademaker/projects/E1792/Output/mm10/home/insertions", recursive = T, full.names = T)) %>%
+  dplyr::add_row(file = dir("/DATA/usr/l.dauban/projects/TagMap/E1828_2nd_round_T3_T48_T201/KR_pipeline/mm10/home/insertions", recursive = T, full.names = T)) %>%
+  dplyr::add_row(file = dir("/DATA/usr/l.dauban/projects/TagMap/E1828_2nd_round_T3_T48_T201/KR_pipeline/oneread/mm10/home/insertions", recursive = T, full.names = T)) %>%
+  dplyr::filter(grepl("insertions", file)) %>%
+  dplyr::mutate(sample = stringr::str_remove(basename(file), "\\..*"),
+                experiment = case_when(grepl("E1792", file) ~ "E1792",
+                                       grepl("E1828", file) ~ "E1828",
+                                       .default = "unknown"))
+
+
+#select the files to load
+no_inserts_found = c(119, 121, 125:131, 134:136, 138, 143)
+all_rows = 1:nrow(metadata_E1792_E1828)
+rows_to_load = all_rows[!all_rows %in% c(119, 121, 125:131, 134:136, 138, 143)]
+
+#some are only mapped from one arm (no read_count_1 / read_count_2 found), but they can still be used (give a warning that the parser doesn't match but that is okay)
+samples_single_mapped = c(3, 25, 26, 32, 118:145)
+
+# Load all mapped insertion sites into single tibble
+tib_E1792_E1828 <- dplyr::bind_rows(lapply(
+  rows_to_load,
+  function(i) {
+    tmp <- readr::read_tsv(metadata_E1792_E1828$file[i],
+      col_types = cols(
+                                            .default = col_character(),
+                                            start = col_double(),
+                                            end = col_double(),
+                                            read_count = col_double(),
+                                            mapq = col_double(),
+                                            read_count_1 = col_double(),
+                                            mapq_1 = col_character(),
+                                            read_count_2 = col_double(),
+                                            mapq_2 = col_character()
+      )) %>%
+      dplyr::mutate(sample = metadata_E1792_E1828$sample[i],
+                    experiment = metadata_E1792_E1828$experiment[i])
+  }
+))
+
+
+#check that the samples with 'no insert found' indeed have no inserts
+test <- dplyr::bind_rows(lapply(
+  no_inserts_found,
+  function(i) {
+    tmp <- readr::read_tsv(metadata_E1792_E1828$file[i],
+      col_types = cols(
+                                            .default = col_character(),
+                                            start = col_double(),
+                                            end = col_double(),
+                                            read_count = col_double(),
+                                            mapq = col_double(),
+                                            read_count_1 = col_double(),
+                                            mapq_1 = col_character(),
+                                            read_count_2 = col_double(),
+                                            mapq_2 = col_character()
+      )) %>%
+      dplyr::mutate(sample = metadata_E1792_E1828$sample[i])
+    
+  }
+))
+test
+```
+
+
+## landing pads lise
+These launch pads are based on either Lise's snapgene file of the launch pad (align the overhangs there to the genome in IGV and take the end coordinates), or on the mapping data from the clones (based on my running of Koens pipeline).
+Often this does not exactly match Lise's annotation in her github, I am not sure why?
+Also, for F108 and N37 the pipeline could not make a 'integrations' file, so I took the location from 'putative insertion' folder, I am not sure why the pipeline failed on those samples. 
+
+
+```{r}
+
+LP_coordinates_Lise_vc = c(
+  #coordinates based in Lise's snapgene files of the launch pads
+  Fzd5 = 'chr1:64993495-64993508:+', 
+  Tdgf1 = 'chr9:110927616-110927619:-', 
+  N1 = 'chr6:122653234-122653235:+', #originally called 'Nanog'
+  #coordinates found in mapping from E1682 (either the real output or putative insertions)
+  #F = Fzd5, N = Nanog
+  T3 = 'chr9:109077493-109077494:-', #new pipeline does not give location for T3, but 'putative insertion' shows 109077493, 109077494
+  T201 = 'chr9:112440263-112440264:+', #T201 has 2 real integrations, don't use it for analysis
+  T48 = 'chr9:109626921-109626922:-',
+  F108 = 'chr1:79293542-79293543:-', #old pipeline, does not give 1bp insertion locations, gives: 79293302-79293543 #new pipeline does not give location for F108, but 'putative insertion' shows 79293542, 79293543
+  N31 = 'chr6:143694589-143694590:+',
+  N37 = 'chr6:109001000-109001001:-', #old pipeline, does not give 1bp insertion locations, gives: 109000598-109001146 #new pipeline does not give location for N37, but 'putative insertion' shows 109001000, 109001001
+  T137 = 'chr9:110925103-110925104:+'
+)
+
+LP_coordinates_Lise_tib = tibble(LP = names(LP_coordinates_Lise_vc),
+                                 chr = str_extract(LP_coordinates_Lise_vc, "chr."),
+                                 start = str_remove_all(str_extract(LP_coordinates_Lise_vc, ":[0-9]*-"), ":|-"),
+                                 end = str_remove_all(str_extract(LP_coordinates_Lise_vc, "-.*"), "-|:|\\+"),
+                                 strand = substr(LP_coordinates_Lise_vc, str_length(LP_coordinates_Lise_vc),str_length(LP_coordinates_Lise_vc)))
+LP_coordinates_Lise_gr = GRanges(LP_coordinates_Lise_tib) 
+
+LP_coordinates_Lise_tib_2 = LP_coordinates_Lise_gr %>%
+  resize(width = 1, fix = 'center') %>%
+  as_tibble() %>%
+  select(-end, -strand) %>%
+  dplyr::rename(LP_chr = seqnames,
+                LP_coordinate = start) 
+```
+
+
+
+## filtered data Lise
+```{r}
+
+chromosomes <- paste0("chr", c(1:19, "X"))
+
+
+tib_ints_Lise = bind_rows(tib_E1792_E1828, ints_E1682) %>%
+  dplyr::mutate(chr = factor(chr, levels = chromosomes)) %>%
+  tidyr::drop_na(chr) %>%
+# Add factor 'LP' describing source of hopping
+  dplyr::mutate(
+    LP = case_when(
+      #the original LPs created by Lise via knockin
+      grepl("Fzd5_", sample) ~ "Fzd5",
+      grepl("Tdgf1_", sample) ~ "Tdgf1",
+      grepl("Nanog_", sample) ~ "N1", #originally called 'Nanog'
+      #the clones that Lise re-hopped
+      grepl("N37_", sample) ~ "N37", 
+      grepl("N31_", sample) ~ "N31", 
+      grepl("F108_", sample) ~ "F108",
+      grepl("T201_", sample) ~ "T201",
+      grepl("T137_", sample) ~ "T137", #
+      grepl("T48_", sample) ~ "T48",
+      grepl("T3_", sample) ~ "T3",
+      .default="unknown"),
+    type = case_when(grepl("_D", sample)  ~ "pool", #D = days after transfection
+                     grepl("_FACS", sample)  ~ "pool",  #pool samples, I expect taken on day of FACS sorting clones, not sure
+                     grepl("_cl", sample)  ~ "clone",
+                     .default = "unknown"
+                     )
+    ) %>%
+  left_join(LP_coordinates_Lise_tib_2) %>%
+  dplyr::mutate(LP_chr = factor(LP_chr, levels = chromosomes))
+
+#filter at least 5 reads for clones
+tib_ints_Lise_filt = tib_ints_Lise %>%
+  filter(read_count >= 5 | type == "pool")
+```
+
+# Combine all
+
+
+```{r}
+
+all_ints_comb = tib_ints_Lise_filt %>%
+  mutate(insert_name = "LoxP", 
+         insert = "minimal insert") %>%
+  bind_rows(all_ints_Sox2) %>%
+  bind_rows(ints_E1962) %>%
+  bind_rows(ints_E2048) %>%
+  bind_rows(ints_E2913)%>%
+  bind_rows(ints_E2409_filtered)%>%
+  bind_rows(ints_E2288_grouped) %>%
+  bind_rows(ints_E2703_filtered) %>%
+  mutate(insert = case_when(insert == "CRE6" ~ "minimal insert",
+                            .default = insert),
+         genotype = case_when(is.na(genotype) ~ "WT",
+                              .default = genotype))
+#   
+table(all_ints_comb$experiment, all_ints_comb$LP, useNA = 'ifany')
+table(all_ints_comb$experiment, all_ints_comb$insert, useNA = 'ifany')
+table(all_ints_comb$experiment, all_ints_comb$insert_name, useNA = 'ifany')
+
+# write_tsv(all_ints_comb, "/home/c.moene/projects/hopping_technology/05_hopping_distribution_single_LPs/rds/CM20260104_collected_mapped_ints_all.tsv")
+
+
+```
+

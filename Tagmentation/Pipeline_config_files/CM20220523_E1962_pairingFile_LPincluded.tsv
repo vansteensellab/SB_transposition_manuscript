@@ -1,0 +1,4 @@
+ID	Forward	Reverse	home_location	home_sequence	hybrid
+LoxP_hop	73_LoxP_hop_Fw	148_LoxP_hop_Rv	F1_NanogSB	NanogSB_PB_LP	CAST-129S
+NanogS_hop	74_NanogS_hop_Fw	149_NanogS_hop_Rv	F1_NanogSB	NanogSB_PB_LP	CAST-129S
+NanogL_hop	75_NanogL_hop_Fw	150_NanogL_hop_Rv	F1_NanogSB	NanogSB_PB_LP	CAST-129S
